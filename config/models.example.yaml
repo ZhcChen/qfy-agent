@@ -1,0 +1,36 @@
+# qfy-agent 模型注册表配置示例
+#
+# 使用方式：消费方读取本文件（或自行构造等价 YAML），调用 registry.Load 注入。
+# 库不读取环境变量、不触碰文件系统，配置一律由消费方传入（R18）。
+#
+# 凭据约定（security review）：api_key 仅为占位，真实 key 经受保护来源注入
+# （收紧文件权限的配置文件或密钥管理），不得提交进源码库，任何日志与审计字段不得包含凭据。
+
+models:
+  # 本地主力模型：无原生工具调用，适配层走 prompt 注入策略
+  - id: gemma-4-e4b
+    backend: openai-compatible
+    base_url: http://192.168.1.91:1234/v1
+    api_key: ""
+    model: google/gemma-4-e4b
+    capabilities:
+      tool_calling: none
+      json_mode: true
+      streaming: true
+    default_params:
+      temperature: 0.2
+      max_tokens: 2048
+
+  # 备用模型：工具调用部分可用，首轮透传失败后自动降级为注入策略
+  - id: gemma-4-12b
+    backend: openai-compatible
+    base_url: http://192.168.1.91:1234/v1
+    api_key: ""
+    model: google/gemma-4-12b
+    capabilities:
+      tool_calling: partial
+      json_mode: true
+      streaming: true
+    default_params:
+      temperature: 0.2
+      max_tokens: 2048
