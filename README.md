@@ -53,7 +53,7 @@
 
 **工具执行双模式**：
 
-- 通过 `loop.Runner.RegisterTool` 注册执行函数 → 网关在单次请求内自动执行受控循环（模型调用 → 工具执行 → tool 消息回填 → 再调用，直到最终答案或轮数上限）。
+- 通过 `loop.Tools.Register` 注册执行函数 → 网关在单次请求内自动执行受控循环（模型调用 → 工具执行 → tool 消息回填 → 再调用，直到最终答案或轮数上限）。
 - 只定义未注册执行函数的工具 → 响应返回标准 `tool_calls`，消费方自行执行后以 `role: "tool"` 消息回传（标准 OpenAI 多轮形态）。
 - 混合场景（同一响应部分注册部分未注册）→ 整轮返回标准 tool_calls，不部分执行。
 
@@ -131,7 +131,9 @@ curl -N http://127.0.0.1:8080/v1/chat/completions \
 data, _ := os.ReadFile("config/models.example.yaml") // 消费方读取文件，库不碰文件系统
 reg, _ := registry.Load(data)
 client := backend.NewClient()
-runner := loop.NewRunner(client, loop.WithAudit(notifier)) // notifier 为审计回调（落库）
+notifier := audit.NewNotifier()                       // 审计通知器（落库逻辑由消费方实现）
+notifier.SetOnCall(func(rec audit.CallRecord) { /* 消费方落库 */ })
+runner := loop.NewRunner(nil, loop.WithOnCall(notifier.Notify)) // 工具执行器注册见下方
 handler := api.NewHandler(api.HandlerConfig{
     Registry: reg,
     Runner:   runner,
@@ -139,6 +141,17 @@ handler := api.NewHandler(api.HandlerConfig{
     Notifier: notifier,
 })
 http.ListenAndServe(":8080", handler)
+```
+
+工具执行器注册（网关内自动执行受控循环，KTD3）：
+
+```go
+tools := loop.NewTools()
+tools.Register("map_column", mapColumnToolDef, func(ctx context.Context, call backend.ToolCall) (string, error) {
+    // 消费方业务逻辑：把模型产出的参数映射为标准字段
+    return doMapping(call.Function.Arguments)
+})
+runner := loop.NewRunner(tools, loop.WithOnCall(notifier.Notify))
 ```
 
 ## 审计回调

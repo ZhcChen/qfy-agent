@@ -16,8 +16,9 @@ import (
 	"github.com/qfy-agent/qfy-agent/backend"
 )
 
-// DefaultSummaryRunes 流式输出摘要（content 与工具参数）保留的 rune 数上限。
-const DefaultSummaryRunes = 500
+// DefaultSummaryRunes 流式输出摘要（content 与工具参数）保留的 rune 数上限
+// （评审修正：统一引用 audit 包常量，与 loop 摘要单一来源）。
+const DefaultSummaryRunes = audit.DefaultSummaryMaxRunes
 
 // ProxyOptions 透传流配置（R11）。
 type ProxyOptions struct {
@@ -211,6 +212,9 @@ func (p *streamProxy) emitRecord(truncated bool, errMsg string) {
 		Stream:    true,
 		Truncated: truncated,
 	}
+	// 回调以 recover 包裹（评审修正：与 audit.Notifier.Notify 的 panic 安全
+	// 契约一致——回调 panic 不影响流式透传本身）。
+	defer func() { _ = recover() }()
 	p.opts.OnCall(rec)
 }
 

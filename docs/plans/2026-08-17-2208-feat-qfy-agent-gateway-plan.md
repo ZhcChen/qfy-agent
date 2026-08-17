@@ -112,7 +112,7 @@ execution: code
 - KTD6. **内置轻量 JSON schema 校验器，不引入第三方校验库**：支持 type、properties、required、enum、items 子集，输出结构化错误列表（字段路径 + 错误类型码）；用于注入输出校验（name ∈ 工具集、arguments 结构）与 JSON mode 输出校验。校验失败把错误回喂模型重试，最多 2 次（R15），仍失败返回稳定错误（统一错误体，不外泄原始堆栈）。重试判定基于错误类型码，不做错误消息字符串匹配。
 - KTD7. **SSE 工程细节**：心跳注释行 `: keep-alive` 间隔 15s（小于常见代理 idle 超时 60s，留 2 倍余量）；每次写出前用 http.NewResponseController(w).SetWriteDeadline 续期（默认 30s），规避 WriteTimeout 截断流；上游透传用 bufio.Reader 逐事件读改写并立即 Flush，先读上游状态码（非 2xx 直接返回错误体不伪流式），客户端断开经 context 取消上游请求；模拟流按小块切分 content 增量、首 chunk 带 role、末 chunk 带 finish_reason、`data: [DONE]` 结尾；流中错误发标准 error 事件；上游流缺 `[DONE]` 视为截断并在审计中记录。
 - KTD8. **协议兼容白名单**：响应 object 常量（chat.completion / chat.completion.chunk）、finish_reason 仅输出规范枚举（stop|length|tool_calls|content_filter）、错误体统一为 {"error":{message,type,param,code}}、max_tokens 与 max_completion_tokens 双字段兼容透传、stream_options.include_usage 支持（usage chunk 以空 choices 数组发出，随后 [DONE]）。依据外部研究：官方 openai-openapi 规范已逐字段核对。未知请求字段显式透传后端，未知响应字段显式丢弃——白名单语义双向明确。
-- KTD9. **错误分类与审计归属**：typed error taxonomy 定义于 backend 层（后端不可用、响应畸形、超时等可识别错误类型），tooling 只做策略决策，不解析错误消息文本；CallRecord 统一由 loop 层产出，api/流式层只中继不重复创建；审计回调以 recover 包裹，回调 panic 不影响请求响应。
+- KTD9. **错误分类与审计归属**：typed error taxonomy 定义于 backend 层（后端不可用、响应畸形、超时等可识别错误类型），tooling 只做策略决策，不解析错误消息文本；CallRecord 按路径归属——非流式由 loop 层产出，流式透传由 api 层在流结束/中断时产出（评审修正 G2，实现已按此落地），模拟流复用 loop 产出；审计回调以 recover 包裹，回调 panic 不影响请求响应。
 
 ### High-Level Technical Design
 

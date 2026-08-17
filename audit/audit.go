@@ -13,12 +13,16 @@ import (
 	"time"
 )
 
+// DefaultSummaryMaxRunes 审计摘要统一截断上限（评审修正：单一来源，loop 与
+// api 流式透传摘要均引用本常量，避免跨包默认值漂移）。
+const DefaultSummaryMaxRunes = 500
+
 // OnCall 审计回调：每次后端调用完成后同步触发（F1）。
 // 回调不得 panic（库以 recover 兜底，但 panic 会丢失本次审计记录）；
 // 回调内不得阻塞请求过久（README 建议落库异步化）。
 type OnCall func(record CallRecord)
 
-// InputSummary 输入摘要：消息数、各角色 content 前 N 字符、工具列表、轮次（R17）。
+// InputSummary 输入摘要：消息数、各角色 content 前 N 字符、工具列表（R17）。
 type InputSummary struct {
 	// MessageCount 消息数。
 	MessageCount int
@@ -26,8 +30,6 @@ type InputSummary struct {
 	RoleContents map[string]string
 	// ToolNames 请求声明的工具列表。
 	ToolNames []string
-	// Round 当前轮次（从 0 开始）。
-	Round int
 }
 
 // OutputSummary 输出摘要：content 前 N 字符或 tool_calls 概要（R17）。
@@ -46,6 +48,17 @@ type ToolCallSummary struct {
 	Arguments string
 }
 
+// ToolResult 工具执行概要（评审修正 F6：F2 失败路径——超时/panic——可追溯）。
+// 由 loop 层在执行工具后收集，随下一轮上游调用的 CallRecord 一并回传。
+type ToolResult struct {
+	// Name 工具名。
+	Name string
+	// Error 执行错误（超时/panic/执行失败；成功为空字符串）。
+	Error string
+	// Duration 执行耗时。
+	Duration time.Duration
+}
+
 // CallRecord 单次后端调用的审计记录（KTD9：非流式由 loop 层产出；
 // 流式透传由 api 层在流结束或中断时产出，评审修正 G2）。
 type CallRecord struct {
@@ -59,6 +72,8 @@ type CallRecord struct {
 	Input InputSummary
 	// Output 输出摘要（调用失败时可能为空）。
 	Output OutputSummary
+	// ToolResults 上一轮工具执行概要（评审修正 F6；无工具执行为空）。
+	ToolResults []ToolResult
 	// Duration 调用耗时。
 	Duration time.Duration
 	// Error 错误（稳定错误信息；成功为空字符串）。

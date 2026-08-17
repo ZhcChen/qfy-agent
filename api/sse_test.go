@@ -248,7 +248,7 @@ func TestProxyStreamFinishReasonWhitelist(t *testing.T) {
 		`{"id":"c1","object":"chat.completion","created":2,"model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"logprobs":null,"finish_reason":null}],"system_fingerprint":"fp_abc","service_tier":"default"}`,
 		// 内容 chunk：未知字段丢弃。
 		`{"id":"c1","object":"chat.completion.chunk","created":2,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
-		// 末 chunk：非规范 finish_reason（function_call）→ stop。
+		// 末 chunk：废弃枚举 function_call → 语义等价映射为 tool_calls（评审修正）。
 		`{"id":"c1","object":"chat.completion.chunk","created":2,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"function_call"}]}`,
 		// usage chunk：usage 原样保留（含非白名单 details 子字段）。
 		`{"id":"c1","object":"chat.completion.chunk","created":2,"model":"m","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12,"completion_tokens_details":{"reasoning_tokens":2}}}`,
@@ -287,8 +287,8 @@ func TestProxyStreamFinishReasonWhitelist(t *testing.T) {
 	}
 
 	c2 := parseChunk(t, events[2])
-	if fr, _ := c2.Choices[0].FinishReason.(string); fr != "stop" {
-		t.Errorf("chunk2 非规范 finish_reason 应白名单化为 stop，得到 %v", c2.Choices[0].FinishReason)
+	if fr, _ := c2.Choices[0].FinishReason.(string); fr != "tool_calls" {
+		t.Errorf("chunk2 function_call 应语义等价映射为 tool_calls，得到 %v", c2.Choices[0].FinishReason)
 	}
 
 	c3 := parseChunk(t, events[3])

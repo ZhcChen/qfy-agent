@@ -103,6 +103,27 @@ func postChat(t *testing.T, url string, body any) *http.Response {
 	return resp
 }
 
+// postRaw 发送原始字符串请求体（超大请求体测试用）。
+func postRaw(t *testing.T, url, raw string) *http.Response {
+	t.Helper()
+	resp, err := http.Post(url+"/v1/chat/completions", "application/json", strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("POST 失败: %v", err)
+	}
+	return resp
+}
+
+// bodyString 读取并返回响应体全文。
+func bodyString(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取响应体失败: %v", err)
+	}
+	return string(b)
+}
+
 func decodeResp(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
 	defer resp.Body.Close()
@@ -864,5 +885,198 @@ func TestWrongMethod(t *testing.T) {
 	}
 	if e2.Error.Code != "method_not_allowed" {
 		t.Errorf("错误体 code 应为 method_not_allowed，得到 %q", e2.Error.Code)
+	}
+}
+
+// TestChatStreamingFalseModelSimulates：streaming:false 能力模型 + stream=true
+// 无 tools → 走非流式调用 + 模拟流（评审修正：R12 缓冲模拟按能力触发，不静默透传）。
+func TestChatStreamingFalseModelSimulates(t *testing.T) {
+	content := `{"ok": true}`
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, fmt.Sprintf(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, content))
+	}))
+	defer upstream.Close()
+
+	// 注册表：streaming: false 的模型。
+	regYAML := fmt.Sprintf(`
+models:
+  - id: no-stream
+    backend: openai-compatible
+    base_url: %s
+    model: no-stream-backend
+    capabilities:
+      tool_calling: none
+      json_mode: true
+      streaming: false
+`, upstream.URL)
+	reg, err := registry.Load([]byte(regYAML))
+	if err != nil {
+		t.Fatalf("加载注册表失败: %v", err)
+	}
+	rec := &auditRecorder{}
+	notifier := audit.NewNotifier()
+	notifier.SetOnCall(rec.onCall)
+	runner := loop.NewRunner(nil, loop.WithOnCall(notifier.Notify))
+	srv := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry: reg,
+		Runner:   runner,
+		Client:   backend.NewClient(),
+		Notifier: notifier,
+	}))
+	defer srv.Close()
+
+	resp := postChat(t, srv.URL, map[string]any{
+		"model":    "no-stream",
+		"messages": []any{map[string]any{"role": "user", "content": "输出 JSON"}},
+		"stream":   true,
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("应返回 200，得到 %d: %s", resp.StatusCode, bodyString(t, resp))
+	}
+	events := parseSSE(t, bodyString(t, resp))
+	if len(events) < 2 || events[len(events)-1] != "[DONE]" {
+		t.Fatalf("应为模拟 SSE 流并以 [DONE] 结尾，事件数=%d", len(events))
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Errorf("上游应为 1 次非流式调用，得到 %d", upstreamCalls.Load())
+	}
+	// 模拟流应含 content 增量。
+	joined := strings.Join(events, "")
+	if !strings.Contains(joined, "ok") {
+		t.Errorf("模拟流应含模型输出内容，得到 %s", joined[:min(len(joined), 200)])
+	}
+}
+
+// TestChatStreamStringTrue：stream 字段为字符串 "true" → 按布尔处理（评审修正，
+// 不静默降级为非流式）。
+func TestChatStreamStringTrue(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "data: "+`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`+"\n\n")
+		fl.Flush()
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		fl.Flush()
+	}))
+	defer upstream.Close()
+	srv, _ := newTestHandler(t, upstream.URL, nil)
+	defer srv.Close()
+
+	resp := postChat(t, srv.URL, map[string]any{
+		"model":    "gemma-4-e4b",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"stream":   "true",
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("字符串 true 应视为流式，得到 %d: %s", resp.StatusCode, bodyString(t, resp))
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("应为 SSE 响应，Content-Type=%q", ct)
+	}
+}
+
+// TestChatStreamInvalidType：stream 字段为非法类型 → 400（不静默降级）。
+func TestChatStreamInvalidType(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	srv, _ := newTestHandler(t, upstream.URL, nil)
+	defer srv.Close()
+
+	resp := postChat(t, srv.URL, map[string]any{
+		"model":    "gemma-4-e4b",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"stream":   123,
+	})
+	if resp.StatusCode != 400 {
+		t.Fatalf("非法 stream 类型应 400，得到 %d", resp.StatusCode)
+	}
+}
+
+// TestChatBodyTooLarge：超过 1MiB 请求体 → 413（评审修正：不静默截断解析为 400）。
+func TestChatBodyTooLarge(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	srv, _ := newTestHandler(t, upstream.URL, nil)
+	defer srv.Close()
+
+	big := `{"model":"gemma-4-e4b","messages":[{"role":"user","content":"` + strings.Repeat("x", 1<<20+100) + `"}]}`
+	resp := postRaw(t, srv.URL, big)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("超大请求体应 413，得到 %d", resp.StatusCode)
+	}
+}
+
+// TestChatUpstreamErrorMapped502：mock 后端 500 → 502 且错误体保留上游
+// message/type/code（KTD8/writeRunError 映射）。
+func TestChatUpstreamErrorMapped502(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		fmt.Fprint(w, `{"error":{"message":"上游炸了","type":"server_error","code":"internal"}}`)
+	}))
+	defer upstream.Close()
+	srv, _ := newTestHandler(t, upstream.URL, nil)
+	defer srv.Close()
+
+	resp := postChat(t, srv.URL, map[string]any{
+		"model":    "gemma-4-e4b",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("上游 500 应映射 502，得到 %d", resp.StatusCode)
+	}
+	body := bodyString(t, resp)
+	if !strings.Contains(body, "上游炸了") {
+		t.Errorf("502 错误体应保留上游 message，得到 %s", body)
+	}
+}
+
+// TestChatMissingModelField：缺 model → 400 missing_model（评审 testing 补全）。
+func TestChatMissingModelField(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	srv, _ := newTestHandler(t, upstream.URL, nil)
+	defer srv.Close()
+
+	resp := postChat(t, srv.URL, map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if resp.StatusCode != 400 {
+		t.Fatalf("缺 model 应 400，得到 %d", resp.StatusCode)
+	}
+	if !strings.Contains(bodyString(t, resp), "missing_model") {
+		t.Errorf("错误码应为 missing_model，得到 %s", bodyString(t, resp))
+	}
+}
+
+// TestChatStreamFailureAudited：流式启动即失败（上游 500）→ 502 + 审计失败记录
+// （评审 testing 补全：auditStreamFailure 路径）。
+func TestChatStreamFailureAudited(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		fmt.Fprint(w, `{"error":{"message":"boom","type":"server_error"}}`)
+	}))
+	defer upstream.Close()
+	srv, rec := newTestHandler(t, upstream.URL, nil)
+	defer srv.Close()
+
+	resp := postChat(t, srv.URL, map[string]any{
+		"model":    "gemma-4-e4b",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"stream":   true,
+	})
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("流式启动失败应 502，得到 %d", resp.StatusCode)
+	}
+	found := false
+	for _, r := range rec.get() {
+		if r.Stream && r.Error != "" && r.Strategy == "direct" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("流式启动失败应触发审计（Stream=true、Error 非空），记录=%+v", rec.get())
 	}
 }

@@ -22,13 +22,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"reflect"
 	"sync"
 	"time"
 
 	"github.com/qfy-agent/qfy-agent/audit"
 	"github.com/qfy-agent/qfy-agent/backend"
+	"github.com/qfy-agent/qfy-agent/internal/anyutil"
 	"github.com/qfy-agent/qfy-agent/registry"
+	"github.com/qfy-agent/qfy-agent/schema"
 	"github.com/qfy-agent/qfy-agent/tooling"
 )
 
@@ -43,8 +44,12 @@ const (
 	DefaultMaxUpstreamCalls = 12
 	// DefaultToolTimeout per-tool 执行超时（F2）。
 	DefaultToolTimeout = 30 * time.Second
-	// DefaultSummaryMaxRunes 审计摘要前 N 字符（R17）。
-	DefaultSummaryMaxRunes = 200
+	// DefaultSummaryMaxRunes 审计摘要前 N 字符（R17；统一引用 audit 包常量，
+	// 评审修正：与 api 流式透传摘要单一来源）。
+	DefaultSummaryMaxRunes = audit.DefaultSummaryMaxRunes
+	// DefaultToolResultMaxRunes 工具执行结果回填上限（评审修正：防止超大工具
+	// 输出撑爆上下文与上游请求体；超出截断并附标记）。
+	DefaultToolResultMaxRunes = 16 << 10
 )
 
 // Config 循环配置（硬性默认值均可通过 Option 覆盖；非正值忽略保留默认）。
@@ -59,6 +64,8 @@ type Config struct {
 	ToolTimeout time.Duration
 	// SummaryMaxRunes 审计摘要前 N 字符（R17）。
 	SummaryMaxRunes int
+	// ToolResultMaxRunes 工具执行结果回填上限（评审修正）；0 取默认。
+	ToolResultMaxRunes int
 }
 
 // DefaultConfig 返回循环默认配置。
@@ -69,6 +76,7 @@ func DefaultConfig() Config {
 		MaxUpstreamCalls:     DefaultMaxUpstreamCalls,
 		ToolTimeout:          DefaultToolTimeout,
 		SummaryMaxRunes:      DefaultSummaryMaxRunes,
+		ToolResultMaxRunes:   DefaultToolResultMaxRunes,
 	}
 }
 
@@ -107,6 +115,15 @@ func WithToolTimeout(d time.Duration) Option {
 	return func(r *Runner) {
 		if d > 0 {
 			r.cfg.ToolTimeout = d
+		}
+	}
+}
+
+// WithToolResultMaxRunes 覆盖工具执行结果回填上限（评审修正）；非正值忽略。
+func WithToolResultMaxRunes(n int) Option {
+	return func(r *Runner) {
+		if n > 0 {
+			r.cfg.ToolResultMaxRunes = n
 		}
 	}
 }
@@ -242,8 +259,10 @@ type Runner struct {
 
 // NewRunner 构造推理循环执行器。tools 为工具执行器注册表（可为 nil，此时全部
 // 工具视为未注册，响应永远返回标准 tool_calls 由消费方编排，KTD3）。
-// 默认使用内部 http.Client（Transport 自动包装以统计上游调用次数，F3），
-// 可通过 WithHTTPClient 注入自定义 client（其 Transport 同样被包装）。
+// 默认内部 http.Client 应用 backend.DefaultRequestTimeout（30s，评审修正：默认
+// 装配不得绕过非流式超时契约）；注入的 client 不被就地改写——克隆其 Transport
+// 包装 countingTransport 以统计上游调用次数（F3），消费方对象保持原样
+// （评审修正：共享 client 无副作用、无并发写竞态）。
 func NewRunner(tools *Tools, opts ...Option) *Runner {
 	r := &Runner{
 		tools:    tools,
@@ -254,14 +273,15 @@ func NewRunner(tools *Tools, opts ...Option) *Runner {
 		o(r)
 	}
 	if r.hc == nil {
-		r.hc = &http.Client{}
+		r.hc = &http.Client{Timeout: backend.DefaultRequestTimeout}
 	}
 	base := r.hc.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	r.hc.Transport = &countingTransport{base: base}
-	r.client = backend.NewClient(backend.WithHTTPClient(r.hc))
+	clone := *r.hc
+	clone.Transport = &countingTransport{base: base}
+	r.client = backend.NewClient(backend.WithHTTPClient(&clone))
 	r.strategies = tooling.NewStrategies(r.client)
 	return r
 }
@@ -278,7 +298,7 @@ func NewRunner(tools *Tools, opts ...Option) *Runner {
 //   - 校验重试耗尽 → *ValidationExhaustedError（R15 稳定错误）；
 //   - 上游调用总次数超限 → *UpstreamLimitError（F3）。
 func (r *Runner) Run(ctx context.Context, m *registry.Model, params map[string]any) (*backend.ChatCompletion, error) {
-	msgs, ok := toolingMessages(params["messages"])
+	msgs, ok := anyutil.AsSlice(params["messages"])
 	if !ok {
 		return nil, fmt.Errorf("messages 应为数组，实际为 %T", params["messages"])
 	}
@@ -290,16 +310,19 @@ func (r *Runner) Run(ctx context.Context, m *registry.Model, params map[string]a
 	}
 	p["messages"] = messages
 
-	ctx = withCallCounter(ctx, &callCounter{})
+	ctx = withCallCounter(ctx, &callCounter{limit: r.cfg.MaxUpstreamCalls})
 	tools := requestTools(p)
 	strategy := strategyName(m, len(tools) > 0)
 
 	var last *backend.ChatCompletion
-	for round := 0; round < r.cfg.MaxRounds; round++ {
-		cc, err := r.callRound(ctx, m, p, round, strategy)
+	var toolResults []audit.ToolResult // 上一轮工具执行结果（随本轮调用入审计）。
+	validationRetries := 0             // 执行前校验重试计数（R15，不消耗轮次）。
+	for round := 0; round < r.cfg.MaxRounds; {
+		cc, err := r.callRound(ctx, m, p, round, strategy, toolResults)
 		if err != nil {
 			return nil, err
 		}
+		toolResults = nil
 		last = cc
 		calls := responseToolCalls(cc)
 		if len(calls) == 0 {
@@ -308,6 +331,21 @@ func (r *Runner) Run(ctx context.Context, m *registry.Model, params map[string]a
 		if !r.allExecutorsRegistered(calls) {
 			return cc, nil // KTD3：任一未注册 → 整轮返回标准 tool_calls，不部分执行。
 		}
+		// 执行前校验（评审修正 F5）：tool_call 的 name 必须在请求声明工具集内，
+		// arguments 按声明 schema 校验；校验失败按 R15 回喂重试（不消耗轮次）。
+		if err := r.validateToolCalls(calls, p); err != nil {
+			var te *tooling.Error
+			if !errors.As(err, &te) {
+				return nil, err
+			}
+			if validationRetries >= r.cfg.MaxValidationRetries {
+				return nil, &ValidationExhaustedError{Last: te}
+			}
+			messages = append(messages, validationFeedbackMessage(te))
+			p["messages"] = messages
+			validationRetries++
+			continue
+		}
 		if round == r.cfg.MaxRounds-1 {
 			return cc, nil // R14：达到轮数硬上限，停止并返回当前响应。
 		}
@@ -315,11 +353,54 @@ func (r *Runner) Run(ctx context.Context, m *registry.Model, params map[string]a
 		// 每条 tool_call 并回填对应 role=tool 消息（R16/F2）。
 		messages = append(messages, assistantMessage(cc))
 		for _, tc := range calls {
-			messages = append(messages, toolMessage(tc, r.executeTool(ctx, tc)))
+			content, tr := r.executeTool(ctx, tc)
+			toolResults = append(toolResults, tr)
+			messages = append(messages, toolMessage(tc, content))
 		}
 		p["messages"] = messages
+		round++
 	}
 	return last, nil // 理论不可达（循环内必然返回）。
+}
+
+// validateToolCalls 执行前校验（评审修正 F5）：tool_call 的 name 必须在请求声明的
+// 工具集内，arguments 按声明参数 schema 用 U4 校验（缺必填/类型不符返回结构化
+// 错误）。校验失败返回 *tooling.Error{Kind: KindValidation}（走 R15 回喂重试），
+// 与注入路径（tooling.wrapInjected）校验语义一致。
+func (r *Runner) validateToolCalls(calls []backend.ToolCall, params map[string]any) error {
+	declared := requestTools(params)
+	byName := make(map[string]tooling.ToolFunction, len(declared))
+	for _, t := range declared {
+		byName[t.Function.Name] = t.Function
+	}
+	for _, tc := range calls {
+		fn, ok := byName[tc.Function.Name]
+		if !ok {
+			return &tooling.Error{Kind: tooling.KindValidation,
+				Message: fmt.Sprintf("工具调用 %q 不在请求声明的工具集中", tc.Function.Name)}
+		}
+		if len(tc.Function.Arguments) == 0 {
+			return &tooling.Error{Kind: tooling.KindValidation,
+				Message: fmt.Sprintf("工具 %q 的 arguments 缺失", tc.Function.Name)}
+		}
+		// arguments 为标准 OpenAI 形态的 JSON 字符串（内容为参数对象），先解包再校验。
+		args := tc.Function.Arguments
+		var inner string
+		if err := json.Unmarshal(args, &inner); err == nil {
+			args = json.RawMessage(inner)
+		}
+		errs, err := schema.Validate(args, fn.Parameters)
+		if err != nil {
+			return &tooling.Error{Kind: tooling.KindValidation,
+				Message: fmt.Sprintf("工具 %q 的 arguments 不是合法 JSON: %v", tc.Function.Name, err)}
+		}
+		if len(errs) > 0 {
+			return &tooling.Error{Kind: tooling.KindValidation,
+				Message: fmt.Sprintf("工具 %q 的 arguments 校验失败（%d 处）", tc.Function.Name, len(errs)),
+				Details: errs}
+		}
+	}
+	return nil
 }
 
 // responseToolCalls 提取主 choice（Choices[0]）的工具调用列表；无 choice 返回 nil。
@@ -347,12 +428,15 @@ func (r *Runner) allExecutorsRegistered(calls []backend.ToolCall) bool {
 
 // executeTool 执行单个工具（R16/F2）：per-tool 超时（条目 Timeout 优先，否则
 // 全局默认）+ panic recover。任何失败（错误/panic/超时）都转为 tool 消息内容
-// 回填，不中断请求。
-func (r *Runner) executeTool(ctx context.Context, tc backend.ToolCall) string {
+// 回填，不中断请求。结果按 ToolResultMaxRunes 截断（评审修正：防止超大工具
+// 输出撑爆上下文与上游请求体）。返回回填内容与执行概要（供审计，评审修正 F6）。
+func (r *Runner) executeTool(ctx context.Context, tc backend.ToolCall) (string, audit.ToolResult) {
+	start := time.Now()
 	name := tc.Function.Name
 	entry, ok := r.tools.Get(name)
 	if !ok || entry.Exec == nil {
-		return fmt.Sprintf("工具 %q 未注册执行器，无法执行", name)
+		return fmt.Sprintf("工具 %q 未注册执行器，无法执行", name),
+			audit.ToolResult{Name: name, Duration: time.Since(start), Error: "未注册执行器"}
 	}
 	timeout := r.cfg.ToolTimeout
 	if entry.Timeout > 0 {
@@ -364,11 +448,23 @@ func (r *Runner) executeTool(ctx context.Context, tc backend.ToolCall) string {
 	result, err := safeExec(entry.Exec, execCtx, tc)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || execCtx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("工具 %q 执行超时（上限 %s）", name, timeout)
+			return fmt.Sprintf("工具 %q 执行超时（上限 %s）", name, timeout),
+				audit.ToolResult{Name: name, Duration: time.Since(start), Error: fmt.Sprintf("执行超时（上限 %s）", timeout)}
 		}
-		return fmt.Sprintf("工具 %q 执行失败: %v", name, err)
+		return fmt.Sprintf("工具 %q 执行失败: %v", name, err),
+			audit.ToolResult{Name: name, Duration: time.Since(start), Error: err.Error()}
 	}
-	return result
+	return truncateToolResult(result, r.cfg.ToolResultMaxRunes, name),
+		audit.ToolResult{Name: name, Duration: time.Since(start)}
+}
+
+// truncateToolResult 按 rune 数截断工具执行结果，超出附截断标记（评审修正：
+// 超大工具输出不得整串回填上游请求体）。
+func truncateToolResult(s string, limit int, toolName string) string {
+	if limit <= 0 || len([]rune(s)) <= limit {
+		return s
+	}
+	return string([]rune(s)[:limit]) + fmt.Sprintf("\n[结果已截断：工具 %q 输出超过 %d 字符]", toolName, limit)
 }
 
 // safeExec 以 recover 包裹执行函数调用：panic 转为 error（F2：执行函数 panic
@@ -407,22 +503,13 @@ func toolMessage(tc backend.ToolCall, content string) map[string]any {
 	}
 }
 
-// strategyName 返回审计策略名：无工具时 direct（直连），否则按模型能力声明
-// 映射 full/partial/none。
+// strategyName 返回审计策略名：无工具时 direct（直连），否则直接使用模型能力
+// 声明的枚举值（full/partial/none，评审修正：不重抄字面量）。
 func strategyName(m *registry.Model, hasTools bool) string {
 	if !hasTools {
 		return "direct"
 	}
-	switch m.Capabilities.ToolCalling {
-	case registry.ToolCallingFull:
-		return "full"
-	case registry.ToolCallingPartial:
-		return "partial"
-	case registry.ToolCallingNone:
-		return "none"
-	default:
-		return "unknown"
-	}
+	return string(m.Capabilities.ToolCalling)
 }
 
 // requestTools 解析请求声明的工具列表（审计摘要用）；解析失败返回空。
@@ -444,32 +531,13 @@ func requestToolNames(params map[string]any) []string {
 	return names
 }
 
-// toolingMessages 把 messages 提取为 []any（兼容 []any 与任意切片形态）；
-// 非切片返回 (nil, false)。
-func toolingMessages(v any) ([]any, bool) {
-	switch t := v.(type) {
-	case nil:
-		return nil, true
-	case []any:
-		return t, true
-	default:
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Slice {
-			return nil, false
-		}
-		out := make([]any, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
-			out[i] = rv.Index(i).Interface()
-		}
-		return out, true
-	}
-}
 
-// ---- 审计（KTD9：CallRecord 统一由 loop 产出） ----
+// ---- 审计（KTD9：CallRecord 由 loop 层产出，流式透传由 api 层产出） ----
 
 // notify 为一次后端调用产出审计记录并触发回调（recover 由 audit.Notifier 包裹）。
+// toolResults 为上一轮工具执行概要（随本轮调用入审计，评审修正 F6）。
 func (r *Runner) notify(m *registry.Model, strategy string, msgs []any, params map[string]any,
-	cc *backend.ChatCompletion, err error, duration time.Duration, round int) {
+	cc *backend.ChatCompletion, err error, duration time.Duration, round int, toolResults []audit.ToolResult) {
 	record := audit.CallRecord{
 		Timestamp: time.Now(),
 		Model:     m.ID,
@@ -478,23 +546,17 @@ func (r *Runner) notify(m *registry.Model, strategy string, msgs []any, params m
 			MessageCount: len(msgs),
 			RoleContents: summarizeRoleContents(msgs, r.cfg.SummaryMaxRunes),
 			ToolNames:    requestToolNames(params),
-			Round:        round,
 		},
-		Output:   summarizeOutput(cc, r.cfg.SummaryMaxRunes),
-		Duration: duration,
-		Error:    errorText(err),
-		Round:    round,
-		Stream:   false,
+		Output:      summarizeOutput(cc, r.cfg.SummaryMaxRunes),
+		ToolResults: toolResults,
+		Duration:    duration,
+		Round:       round,
+		Stream:      false,
+	}
+	if err != nil {
+		record.Error = err.Error()
 	}
 	r.notifier.Notify(record)
-}
-
-// errorText 提取稳定错误文本（成功为空）。
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 // summarizeRoleContents 按角色聚合 content 摘要（每个角色合并后取前 N 字符）。
@@ -573,10 +635,13 @@ func truncateRunes(s string, n int) string {
 
 // ---- 上游调用次数上限（F3） ----
 
-// callCounter 单请求上游调用计数器（经 ctx 传递，请求间隔离）。
+// callCounter 单请求上游调用计数器（F3）：随 ctx 传递，由 countingTransport
+// 每次 HTTP 发送时累加；limit 为硬上限（transport 层兜底，覆盖 partial 降级
+// 等策略内部调用，评审修正：预算检查下探到每次实际发送前）。
 type callCounter struct {
-	mu sync.Mutex
-	n  int
+	mu    sync.Mutex
+	n     int
+	limit int
 }
 
 type counterKey struct{}
@@ -596,10 +661,17 @@ func (t *countingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	if c, ok := req.Context().Value(counterKey{}).(*callCounter); ok {
 		c.mu.Lock()
 		c.n++
+		over := c.limit > 0 && c.n > c.limit
 		c.mu.Unlock()
+		if over {
+			return nil, errBudgetExceeded
+		}
 	}
 	return t.base.RoundTrip(req)
 }
+
+// errBudgetExceeded transport 层预算超限哨兵错误（F3 硬边界）。
+var errBudgetExceeded = errors.New("上游调用次数超过单请求上限")
 
 // checkUpstreamBudget 检查单请求上游调用预算（F3）：达到上限返回稳定错误。
 // 检查发生在每次策略调用之前；单次策略调用内部（如 partial 降级）的超限会在

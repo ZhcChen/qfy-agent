@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -98,8 +99,39 @@ func NormalizeResponse(body []byte) (*ChatCompletion, error) {
 	}
 	for i := range c.Choices {
 		c.Choices[i].FinishReason = NormalizeFinishReason(c.Choices[i].FinishReason)
+		for j := range c.Choices[i].Message.ToolCalls {
+			if args, err := NormalizeArguments(c.Choices[i].Message.ToolCalls[j].Function.Arguments); err == nil {
+				c.Choices[i].Message.ToolCalls[j].Function.Arguments = args
+			}
+		}
 	}
 	return &c, nil
+}
+
+// NormalizeArguments 把 function.arguments 统一为 JSON 字符串形态（契约：消费方
+// 看到的 arguments 是内容为合法 JSON 的字符串，R10）：字符串值原样保留（内容须为
+// 合法 JSON）；对象/数组/标量形态紧凑化后整体编码为 JSON 字符串（评审修正：full/
+// partial 透传不得把对象形态原样外泄）。无法归一化时返回错误。
+func NormalizeArguments(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("arguments 为空")
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if !json.Valid([]byte(s)) {
+			return nil, fmt.Errorf("arguments 字符串内容不是合法 JSON")
+		}
+		return raw, nil
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return nil, err
+	}
+	quoted, err := json.Marshal(buf.String())
+	if err != nil {
+		return nil, err
+	}
+	return quoted, nil
 }
 
 // finish_reason 白名单（KTD8）：仅输出 stop|length|tool_calls|content_filter。
@@ -113,10 +145,16 @@ var validFinishReasons = map[string]bool{
 }
 
 // NormalizeFinishReason 把 finish_reason 白名单化（KTD8）：仅输出
-// stop|length|tool_calls|content_filter。未知值（含缺失）统一归为 stop——语义最接近
-// "正常结束"，且不会被上层误判为 length/tool_calls/content_filter 等触发重试或降级的
-// 特殊语义。导出供 api 层流式透传复用（单一实现，避免跨包漂移）。
+// stop|length|tool_calls|content_filter。function_call（废弃枚举）显式映射为
+// tool_calls——语义等价且与同响应含 tool_calls 的形态一致（评审修正）；
+// 其余未知值（含缺失）统一归为 stop——语义最接近"正常结束"，且不会被上层误判为
+// length/tool_calls/content_filter 等触发重试或降级的特殊语义。
+// 导出供 api 层流式透传复用（单一实现，避免跨包漂移）。
 func NormalizeFinishReason(fr string) string {
+	switch fr {
+	case "function_call":
+		return "tool_calls"
+	}
 	if validFinishReasons[fr] {
 		return fr
 	}
@@ -187,13 +225,21 @@ var (
 	// pathRe 剥离至少两段的类 Unix 路径，如 /var/log/qfy/x.log；
 	// 单段 token（如 /v1）不剥离，避免误伤正常错误文本。
 	pathRe = regexp.MustCompile(`/[\w.\-]+(?:/[\w.\-]+)+`)
+	// secretRe 剥离常见凭据形态（评审修正 P0）：sk- 前缀 API key、Bearer token、
+	// JWT 三段式、常见 key=value 凭据对——防止上游错误体把后端凭据泄漏给消费方。
+	secretRe = regexp.MustCompile(`(?i)(sk-[A-Za-z0-9_\-]{8,}|bearer\s+[A-Za-z0-9._\-]+|eyJ[A-Za-z0-9._\-]{10,}\.eyJ[A-Za-z0-9._\-]{10,}\.[A-Za-z0-9._\-]{10,}|(?:api[_-]?key|token|secret|password)\s*[=:]\s*[^\s"'&,;]+)`)
+	// authorizationRe 兜底：Authorization 头形态整体剥离。
+	authorizationRe = regexp.MustCompile(`(?i)authorization\s*[:=]\s*[^\s"'&,;]+`)
 )
 
-// SanitizeMessage 清洗上游错误 message：剥离疑似 URL 与内部路径后截断为 500 字符。
+// SanitizeMessage 清洗上游错误 message：剥离疑似 URL、内部路径与凭据形态后
+// 截断为 500 字符（评审修正 P0：sk- 前缀/Bearer/JWT 等凭据不得外泄）。
 func SanitizeMessage(msg string) string {
 	msg = urlRe.ReplaceAllString(msg, "[redacted]")
 	msg = winPathRe.ReplaceAllString(msg, "[redacted]")
 	msg = pathRe.ReplaceAllString(msg, "[redacted]")
+	msg = secretRe.ReplaceAllString(msg, "[redacted]")
+	msg = authorizationRe.ReplaceAllString(msg, "[redacted]")
 	r := []rune(msg)
 	if len(r) > maxErrorRunes {
 		msg = string(r[:maxErrorRunes-len([]rune("..."))]) + "..."

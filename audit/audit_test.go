@@ -18,7 +18,6 @@ func TestCallRecordFields(t *testing.T) {
 			MessageCount: 2,
 			RoleContents: map[string]string{"user": "请把列\"客户名称\"映射到标准字段"},
 			ToolNames:    []string{"map_column"},
-			Round:        0,
 		},
 		Output: OutputSummary{
 			Content: "已完成映射",
@@ -37,8 +36,8 @@ func TestCallRecordFields(t *testing.T) {
 	if rec.Input.MessageCount != 2 || len(rec.Input.RoleContents) != 1 {
 		t.Errorf("输入摘要字段不符: %+v", rec.Input)
 	}
-	if rec.Input.Round != 0 || rec.Output.Content != "已完成映射" {
-		t.Errorf("轮次/输出摘要字段不符: %+v", rec)
+	if rec.Output.Content != "已完成映射" {
+		t.Errorf("输出摘要字段不符: %+v", rec)
 	}
 	if len(rec.Output.ToolCalls) != 1 || rec.Output.ToolCalls[0].Name != "map_column" {
 		t.Errorf("tool_calls 概要字段不符: %+v", rec.Output.ToolCalls)

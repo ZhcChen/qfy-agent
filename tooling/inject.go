@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/qfy-agent/qfy-agent/internal/anyutil"
 )
 
 // Example 一个 few-shot 示例对（KTD4）：用户请求与模型应输出的工具调用 JSON。
@@ -148,17 +150,55 @@ func sampleValue(ps map[string]any) any {
 		return []any{}
 	case "object":
 		return map[string]any{}
-	default: // string 与未知类型
+	case "string":
+		// enum 约束优先：示例值必须落在允许列表内，否则示例本身违反所演示 schema
+		// （评审修正 F4）。
+		if enum, ok := ps["enum"].([]any); ok && len(enum) > 0 {
+			return enum[0]
+		}
+		return "示例值"
+	default: // 未知类型
 		return "示例值"
 	}
 }
 
-// InjectMessages 把注入的 system 消息前置到消费方 messages 之前（注入形态，KTD4），返回新列表。
+// InjectMessages 注入 system 消息（KTD4）：若消费方首条消息已是 system，
+// 把注入内容与消费方 system 合并为单条 system 消息（注入内容前置），
+// 避免双 system 冲突（评审修正 F3）；否则注入消息前置。返回新列表，不修改输入。
 func InjectMessages(systemContent string, messages []any) []any {
+	injected := map[string]any{"role": "system", "content": systemContent}
+	if len(messages) > 0 {
+		if first, ok := messages[0].(map[string]any); ok && first["role"] == "system" {
+			merged := make([]any, 0, len(messages))
+			combined := map[string]any{
+				"role":    "system",
+				"content": systemContent + "\n\n" + stringifyContent(first["content"]),
+			}
+			merged = append(merged, combined)
+			merged = append(merged, messages[1:]...)
+			return merged
+		}
+	}
 	out := make([]any, 0, len(messages)+1)
-	out = append(out, map[string]any{"role": "system", "content": systemContent})
+	out = append(out, injected)
 	out = append(out, messages...)
 	return out
+}
+
+// stringifyContent 把 system 消息的 content 归一为字符串（字符串或数组形态均转文本）。
+func stringifyContent(v any) string {
+	switch c := v.(type) {
+	case string:
+		return c
+	case nil:
+		return ""
+	default:
+		b, err := json.Marshal(c)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
 }
 
 // buildInjectionParams 构造注入策略的上游请求参数（R9：tools 描述改写为 prompt 注入）：
@@ -172,7 +212,7 @@ func (s *Strategies) buildInjectionParams(params map[string]any, tools []Tool) m
 		}
 		out[k] = v
 	}
-	msgs, _ := asAnySlice(params["messages"])
+	msgs, _ := anyutil.AsSlice(params["messages"])
 	out["messages"] = InjectMessages(BuildSystemMessage(tools, s.cfg), msgs)
 	return out
 }

@@ -15,11 +15,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
 	"github.com/qfy-agent/qfy-agent/backend"
+	"github.com/qfy-agent/qfy-agent/internal/anyutil"
 	"github.com/qfy-agent/qfy-agent/registry"
 	"github.com/qfy-agent/qfy-agent/schema"
 )
@@ -108,6 +108,23 @@ func (s *Strategies) Call(ctx context.Context, m *registry.Model, params map[str
 		// 无工具：工具调用策略无意义，原样直连后端（含 none 模型的普通对话）。
 		return s.client.Call(ctx, m, params)
 	}
+	// tool_choice 语义（评审修正 F2）："none" 按无工具直连（不注入、不调用工具）；
+	// 指定函数时裁剪工具列表为仅该函数；auto/required/缺省保持全量注入。
+	tools, err := applyToolChoice(params["tool_choice"], tools)
+	if err != nil {
+		return nil, err
+	}
+	if len(tools) == 0 {
+		// tool_choice=none：剥离 tools/tool_choice 后直连（后端不接收工具描述）。
+		p := make(map[string]any, len(params))
+		for k, v := range params {
+			if k == "tools" || k == "tool_choice" {
+				continue
+			}
+			p[k] = v
+		}
+		return s.client.Call(ctx, m, p)
+	}
 	switch m.Capabilities.ToolCalling {
 	case registry.ToolCallingFull:
 		return s.client.Call(ctx, m, params)
@@ -117,6 +134,44 @@ func (s *Strategies) Call(ctx context.Context, m *registry.Model, params map[str
 		return s.callInjection(ctx, m, params, tools)
 	default:
 		return nil, fmt.Errorf("未知工具调用能力 %q", m.Capabilities.ToolCalling)
+	}
+}
+
+// applyToolChoice 按 tool_choice 语义处理工具列表：
+//
+//   - 缺省或 "auto"/"required"：原样返回；
+//   - "none"：返回空列表（调用方按无工具直连，工具调用不生效）；
+//   - 对象形态 {"function":{"name": X}}：裁剪为仅 X；X 不在声明工具集内返回校验错误。
+func applyToolChoice(raw any, tools []Tool) ([]Tool, error) {
+	switch tc := raw.(type) {
+	case nil:
+		return tools, nil
+	case string:
+		switch tc {
+		case "auto", "required":
+			return tools, nil
+		case "none":
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("tool_choice %q 非法（允许 auto|required|none|对象形态）", tc)
+		}
+	case map[string]any:
+		fn, ok := tc["function"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("tool_choice 对象形态缺少 function 字段")
+		}
+		name, _ := fn["name"].(string)
+		if name == "" {
+			return nil, fmt.Errorf("tool_choice 对象形态缺少 function.name")
+		}
+		for _, t := range tools {
+			if t.Function.Name == name {
+				return []Tool{t}, nil
+			}
+		}
+		return nil, fmt.Errorf("tool_choice 指定的工具 %q 不在请求声明的工具集中", name)
+	default:
+		return nil, fmt.Errorf("tool_choice 类型非法（%T）", raw)
 	}
 }
 
@@ -138,13 +193,17 @@ func (s *Strategies) callPartial(ctx context.Context, m *registry.Model, params 
 	return resp, nil
 }
 
-// isDegradable 判定后端错误是否可触发 partial 降级（KTD5）：
-// UnavailableError（网络错误/超时）与 UpstreamError（HTTP 非 2xx）；MalformedError（响应畸形）
-// 不属于降级条件，原样上抛。
+// isDegradable 判定后端错误是否可触发 partial 降级（KTD5）：UpstreamError
+// （HTTP 非 2xx）可降级；UnavailableError 中的超时**不**降级（评审修正：超时
+// 后端大概率继续超时，降级只会让单轮延迟翻倍、燃烧预算）；一般网络错误与
+// MalformedError（响应畸形）原样上抛。
 func isDegradable(err error) bool {
 	var ue *backend.UnavailableError
+	if errors.As(err, &ue) {
+		return !ue.Timeout
+	}
 	var up *backend.UpstreamError
-	return errors.As(err, &ue) || errors.As(err, &up)
+	return errors.As(err, &up)
 }
 
 // callInjection 注入策略（KTD4；none 主路径与 partial 降级共用）：
@@ -315,7 +374,7 @@ func genCallID() string {
 // ParseTools 把外部 OpenAI 格式的 tools 数组（[]any，通常由 JSON 解码得到）解析为 []Tool。
 // 元素非对象或缺 function.name 时报错；tools 缺失/为空返回空切片。
 func ParseTools(raw any) ([]Tool, error) {
-	arr, ok := asAnySlice(raw)
+	arr, ok := anyutil.AsSlice(raw)
 	if !ok {
 		return nil, fmt.Errorf("tools 应为数组，实际为 %T", raw)
 	}
@@ -337,23 +396,3 @@ func ParseTools(raw any) ([]Tool, error) {
 	return out, nil
 }
 
-// asAnySlice 把切片（任意元素类型，如 []any / []map[string]any）统一转换为 []any；
-// 非切片返回 (nil, false)。
-func asAnySlice(v any) ([]any, bool) {
-	switch t := v.(type) {
-	case nil:
-		return nil, true
-	case []any:
-		return t, true
-	default:
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Slice {
-			return nil, false
-		}
-		out := make([]any, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
-			out[i] = rv.Index(i).Interface()
-		}
-		return out, true
-	}
-}

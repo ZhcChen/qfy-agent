@@ -2,12 +2,15 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/qfy-agent/qfy-agent/audit"
 	"github.com/qfy-agent/qfy-agent/backend"
+	"github.com/qfy-agent/qfy-agent/internal/anyutil"
 	"github.com/qfy-agent/qfy-agent/registry"
 	"github.com/qfy-agent/qfy-agent/schema"
 	"github.com/qfy-agent/qfy-agent/tooling"
@@ -41,11 +44,14 @@ func (e *ValidationExhaustedError) Unwrap() error {
 // 仍失败返回 *ValidationExhaustedError（稳定错误）。非校验错误（backend 错误等）
 // 原样上抛。
 //
+// JSON mode（response_format.json_object）下对响应 content 做合法 JSON 校验
+// （KTD6 计划承诺：输出必须做 schema 校验），失败同样回喂重试。
 // 校验回喂消息只作用于本轮重试调用（调用成功后即从后续轮次中消失）；每次调用
-// 前检查单请求上游调用预算（F3），超限返回 *UpstreamLimitError。
+// 前检查单请求上游调用预算（F3，transport 层另有每次发送前的硬边界）。
+// toolResults 为上一轮工具执行概要（随本轮调用入审计，评审修正 F6）。
 func (r *Runner) callRound(ctx context.Context, m *registry.Model, params map[string]any,
-	round int, strategy string) (*backend.ChatCompletion, error) {
-	msgs, _ := toolingMessages(params["messages"])
+	round int, strategy string, toolResults []audit.ToolResult) (*backend.ChatCompletion, error) {
+	msgs, _ := anyutil.AsSlice(params["messages"])
 	cur := make([]any, len(msgs))
 	copy(cur, msgs)
 	params["messages"] = cur
@@ -56,8 +62,16 @@ func (r *Runner) callRound(ctx context.Context, m *registry.Model, params map[st
 		}
 		start := time.Now()
 		cc, err := r.strategies.Call(ctx, m, params, nil)
-		r.notify(m, strategy, cur, params, cc, err, time.Since(start), round)
+		r.notify(m, strategy, cur, params, cc, err, time.Since(start), round, toolResults)
 		if err == nil {
+			if te := checkJSONModeOutput(params, cc); te != nil {
+				if attempt >= r.cfg.MaxValidationRetries {
+					return nil, &ValidationExhaustedError{Last: te}
+				}
+				cur = append(cur, validationFeedbackMessage(te))
+				params["messages"] = cur
+				continue
+			}
 			return cc, nil
 		}
 		var te *tooling.Error
@@ -72,6 +86,29 @@ func (r *Runner) callRound(ctx context.Context, m *registry.Model, params map[st
 		}
 		return nil, err
 	}
+}
+
+// checkJSONModeOutput JSON mode 输出校验（KTD6 计划承诺）：请求声明
+// response_format.type=json_object 时，响应主 choice 的 content 必须是合法 JSON
+// 对象（反序列化为 map）。不满足返回 *tooling.Error{KindValidation}（走 R15
+// 回喂重试）；非 JSON mode 请求返回 nil。
+func checkJSONModeOutput(params map[string]any, cc *backend.ChatCompletion) *tooling.Error {
+	rf, ok := params["response_format"].(map[string]any)
+	if !ok || rf["type"] != "json_object" {
+		return nil
+	}
+	if cc == nil || len(cc.Choices) == 0 {
+		return &tooling.Error{Kind: tooling.KindValidation, Message: "JSON mode 响应缺少 choices"}
+	}
+	var content string
+	if err := json.Unmarshal(cc.Choices[0].Message.Content, &content); err != nil {
+		return &tooling.Error{Kind: tooling.KindValidation, Message: "JSON mode 响应没有文本内容"}
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(content), &obj); err != nil || obj == nil {
+		return &tooling.Error{Kind: tooling.KindValidation, Message: "JSON mode 输出不是合法 JSON 对象"}
+	}
+	return nil
 }
 
 // validationFeedbackMessage 构造校验失败回喂消息（R15/KTD6）：携带错误类型码、

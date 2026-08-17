@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/qfy-agent/qfy-agent/backend"
 	"github.com/qfy-agent/qfy-agent/registry"
@@ -744,4 +745,151 @@ func TestCallDerivesToolsFromParams(t *testing.T) {
 		t.Error("tools 从 params 推导后应注入 system 消息")
 	}
 	assertWrappedToolCall(t, resp)
+}
+
+// TestCallPartialNoDegradeOnTimeout：首轮超时（UnavailableError{Timeout:true}）→
+// 不降级（评审修正：超时后端大概率继续超时，降级只会延迟翻倍、燃烧预算）。
+func TestCallPartialNoDegradeOnTimeout(t *testing.T) {
+	// 后端 handler 阻塞至 ctx 取消（制造客户端超时）；带兜底退出避免 Close 挂起。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer srv.Close()
+	m := testModel(t, srv.URL, registry.ToolCallingPartial)
+	client := backend.NewClient(backend.WithTimeouts(200*time.Millisecond, 5*time.Second))
+	s := NewStrategies(client)
+
+	_, err := s.Call(context.Background(), m, baseParams(), testTools)
+	var ue *backend.UnavailableError
+	if !errors.As(err, &ue) || !ue.Timeout {
+		t.Fatalf("应返回超时类错误，得到 %v", err)
+	}
+}
+
+// TestCallPartialNoDegradeOnMalformed：首轮响应畸形（MalformedError）→ 不降级原样上抛
+// （KTD5：MalformedError 不属于降级条件）。
+func TestCallPartialNoDegradeOnMalformed(t *testing.T) {
+	rb := newSequenceBackend(t, []cannedResponse{{code: 200, body: "not json at all"}})
+	m := testModel(t, rb.srv.URL, registry.ToolCallingPartial)
+	s := NewStrategies(backend.NewClient())
+
+	_, err := s.Call(context.Background(), m, baseParams(), testTools)
+	var me *backend.MalformedError
+	if !errors.As(err, &me) {
+		t.Fatalf("应返回 MalformedError，得到 %v", err)
+	}
+	if rb.count() != 1 {
+		t.Errorf("畸形响应不应触发降级重试，调用次数=%d", rb.count())
+	}
+}
+
+// TestCallToolChoiceNone：tool_choice="none" → 无工具直连（不注入、不调用工具）。
+func TestCallToolChoiceNone(t *testing.T) {
+	rb := newSequenceBackend(t, []cannedResponse{{code: 200, body: completionBody("我不需要工具")}})
+	m := testModel(t, rb.srv.URL, registry.ToolCallingNone)
+	s := NewStrategies(backend.NewClient())
+	params := baseParams()
+	params["tool_choice"] = "none"
+
+	resp, err := s.Call(context.Background(), m, params, testTools)
+	if err != nil {
+		t.Fatalf("Call 失败: %v", err)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 0 {
+		t.Errorf("tool_choice=none 不应产生工具调用，得到 %+v", resp.Choices[0].Message.ToolCalls)
+	}
+	req := rb.req(0)
+	if _, hasTools := req["tools"]; hasTools {
+		t.Errorf("tool_choice=none 不应透传 tools，得到 %v", req["tools"])
+	}
+	msgs, _ := req["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Errorf("tool_choice=none 不应注入 system 消息，消息数=%d", len(msgs))
+	}
+}
+
+// TestCallToolChoiceForced：对象形态强制指定工具 → 裁剪工具列表为仅该函数。
+func TestCallToolChoiceForced(t *testing.T) {
+	content := `{"name": "map_column", "arguments": {"column": "客户名", "standard_field": "customer_name"}}`
+	rb := newSequenceBackend(t, []cannedResponse{{code: 200, body: completionBody(content)}})
+	m := testModel(t, rb.srv.URL, registry.ToolCallingNone)
+	s := NewStrategies(backend.NewClient())
+	params := baseParams()
+	params["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": "map_column"}}
+
+	resp, err := s.Call(context.Background(), m, params, testTools)
+	if err != nil {
+		t.Fatalf("Call 失败: %v", err)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("强制指定工具应产生工具调用，得到 %+v", resp.Choices[0].Message.ToolCalls)
+	}
+	// 注入 system 消息只含该工具（唯一工具）。
+	req := rb.req(0)
+	msgs, _ := req["messages"].([]any)
+	injected, _ := msgs[0].(map[string]any)
+	contentStr, _ := injected["content"].(string)
+	if strings.Count(contentStr, "工具名: map_column") != 1 {
+		t.Errorf("注入消息应只含强制指定的工具，得到 %q", contentStr)
+	}
+	if strings.Contains(contentStr, "工具名: other_tool") {
+		t.Errorf("注入消息不应含其他工具")
+	}
+}
+
+// TestCallToolChoiceForcedUnknown：强制指定不在声明工具集的工具 → 校验错误。
+func TestCallToolChoiceForcedUnknown(t *testing.T) {
+	rb := newSequenceBackend(t, []cannedResponse{{code: 200, body: completionBody("x")}})
+	m := testModel(t, rb.srv.URL, registry.ToolCallingNone)
+	s := NewStrategies(backend.NewClient())
+	params := baseParams()
+	params["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": "ghost_tool"}}
+
+	_, err := s.Call(context.Background(), m, params, testTools)
+	if err == nil || !strings.Contains(err.Error(), "ghost_tool") {
+		t.Fatalf("强制指定未知工具应报错，得到 %v", err)
+	}
+	if rb.count() != 0 {
+		t.Errorf("非法 tool_choice 不应发起上游调用，调用次数=%d", rb.count())
+	}
+}
+
+// TestInjectMessagesMergesExistingSystem：消费方首条消息已是 system → 注入内容
+// 与消费方 system 合并为单条（评审修正 F3：避免双 system 冲突）。
+func TestInjectMessagesMergesExistingSystem(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "system", "content": "你是财务助手"},
+		map[string]any{"role": "user", "content": "你好"},
+	}
+	out := InjectMessages("注入内容", messages)
+	if len(out) != 2 {
+		t.Fatalf("合并后应仍为 2 条消息，得到 %d", len(out))
+	}
+	first, _ := out[0].(map[string]any)
+	content, _ := first["content"].(string)
+	if !strings.Contains(content, "注入内容") || !strings.Contains(content, "你是财务助手") {
+		t.Errorf("合并 system 应同时含注入与消费方内容，得到 %q", content)
+	}
+}
+
+// TestSampleValueHonorsEnum：few-shot 示例值应落在 enum 允许列表内（评审修正 F4）。
+func TestSampleValueHonorsEnum(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"level": map[string]any{"type": "string", "enum": []any{"low", "medium", "high"}},
+		},
+		"required": []any{"level"},
+	}
+	tool := Tool{Type: "function", Function: ToolFunction{Name: "set_level", Parameters: params}}
+	exs := defaultExamples([]Tool{tool})
+	if len(exs) != 1 {
+		t.Fatalf("应有 1 条示例，得到 %d", len(exs))
+	}
+	if !strings.Contains(exs[0].ToolCall, `"level":"low"`) {
+		t.Errorf("示例值应取 enum 首项 low，得到 %q", exs[0].ToolCall)
+	}
 }

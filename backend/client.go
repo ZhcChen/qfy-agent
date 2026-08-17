@@ -22,6 +22,9 @@ import (
 const (
 	DefaultRequestTimeout = 30 * time.Second
 	DefaultStreamTimeout  = 5 * time.Minute
+	// DefaultMaxResponseBytes 非流式响应体大小上限（8 MiB），防止异常/恶意上游
+	// 以超大响应耗尽网关内存（评审修正：资源边界）。
+	DefaultMaxResponseBytes = 8 << 20
 )
 
 // UnavailableError 表示后端不可用（KTD9 分类一）：网络错误或超时。
@@ -106,23 +109,35 @@ type Client struct {
 	RequestTimeout time.Duration
 	// StreamTimeout 流式读取路径超时（独立于 RequestTimeout）。
 	StreamTimeout time.Duration
+	// MaxResponseBytes 非流式响应体大小上限；0 取默认 8 MiB。
+	MaxResponseBytes int64
 
 	injected      *http.Client
 	requestClient *http.Client
 	streamClient  *http.Client
 }
 
-// NewClient 构造后端客户端；默认超时 RequestTimeout=30s、StreamTimeout=5m，可通过 Option 覆盖。
+// NewClient 构造后端客户端；默认超时 RequestTimeout=30s、StreamTimeout=5m，
+// 可通过 Option 覆盖。注入的 http.Client 若未设置 Timeout，仍应用本客户端
+// 的默认超时（双保险，评审修正：注入路径不得绕过超时契约）。
 func NewClient(opts ...Option) *Client {
-	c := &Client{RequestTimeout: DefaultRequestTimeout, StreamTimeout: DefaultStreamTimeout}
+	c := &Client{RequestTimeout: DefaultRequestTimeout, StreamTimeout: DefaultStreamTimeout, MaxResponseBytes: DefaultMaxResponseBytes}
 	for _, o := range opts {
 		o(c)
 	}
 	c.requestClient = &http.Client{Timeout: c.RequestTimeout}
 	c.streamClient = &http.Client{Timeout: c.StreamTimeout}
 	if c.injected != nil {
-		c.requestClient = c.injected
-		c.streamClient = c.injected
+		req := *c.injected
+		if req.Timeout == 0 {
+			req.Timeout = c.RequestTimeout
+		}
+		stream := *c.injected
+		if stream.Timeout == 0 {
+			stream.Timeout = c.StreamTimeout
+		}
+		c.requestClient = &req
+		c.streamClient = &stream
 	}
 	return c
 }
@@ -137,9 +152,16 @@ func (c *Client) Call(ctx context.Context, m *registry.Model, params map[string]
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	limit := c.MaxResponseBytes
+	if limit <= 0 {
+		limit = DefaultMaxResponseBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, &UnavailableError{Op: "读取响应体", Err: err, Timeout: isTimeout(err)}
+	}
+	if int64(len(body)) > limit {
+		return nil, &MalformedError{Phase: "response too large", Err: fmt.Errorf("响应体超过上限 %d 字节", limit)}
 	}
 	return NormalizeResponse(body)
 }

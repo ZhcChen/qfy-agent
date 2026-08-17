@@ -207,11 +207,18 @@ func completionBody(content string) string {
 }
 
 // toolCallsBody 构造含原生 tool_calls 的补全响应；每个名字生成一条工具调用
-// （id=call_i，arguments 为 {"column":"客户名"} 的 JSON 字符串形态）。
+// （id=call_i，arguments 为满足该工具声明必填 schema 的 JSON 字符串形态）。
 func toolCallsBody(names ...string) string {
-	enc, _ := json.Marshal(`{"column":"客户名"}`)
 	parts := make([]string, 0, len(names))
 	for i, name := range names {
+		var args string
+		switch name {
+		case "append_note":
+			args = `{"note":"测试备注"}`
+		default: // map_column 等
+			args = `{"column":"客户名","standard_field":"customer_name"}`
+		}
+		enc, _ := json.Marshal(args)
 		parts = append(parts, fmt.Sprintf(`{"id":"call_%d","type":"function","function":{"name":%q,"arguments":%s}}`, i, name, enc))
 	}
 	return fmt.Sprintf(`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"google/gemma-4-e4b","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[%s]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, strings.Join(parts, ","))
@@ -656,8 +663,8 @@ func TestDefaultLimits(t *testing.T) {
 	if cfg.ToolTimeout != 30*time.Second || DefaultToolTimeout != 30*time.Second {
 		t.Errorf("默认 per-tool 超时应为 30s，得到 %v", cfg.ToolTimeout)
 	}
-	if cfg.SummaryMaxRunes != 200 {
-		t.Errorf("默认摘要字符数应为 200，得到 %d", cfg.SummaryMaxRunes)
+	if cfg.SummaryMaxRunes != audit.DefaultSummaryMaxRunes {
+		t.Errorf("默认摘要字符数应统一引用 audit 包常量 %d，得到 %d", audit.DefaultSummaryMaxRunes, cfg.SummaryMaxRunes)
 	}
 }
 
@@ -905,4 +912,191 @@ func erFunc() ToolExecutor {
 	return func(ctx context.Context, call backend.ToolCall) (string, error) {
 		return "executed:" + call.Function.Name, nil
 	}
+}
+
+// TestRunExecutionTimeValidation：full/partial 原生 tool_calls 参数 schema 非法
+// → 执行前校验失败，按 R15 回喂重试（评审修正 F5）；不执行工具。
+func TestRunExecutionTimeValidation(t *testing.T) {
+	// 第一轮：arguments 缺必填字段（standard_field）→ 校验失败回喂；
+	// 第二轮：合法 → 工具执行。
+	bad := fmt.Sprintf("%q", `{"column":"客户名"}`)
+	good := fmt.Sprintf("%q", `{"column":"客户名","standard_field":"customer_name"}`)
+	rb := newSequenceBackend(t, []cannedResponse{
+		{code: 200, body: fmt.Sprintf(`{"id":"c","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_0","type":"function","function":{"name":"map_column","arguments":%s}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, bad)},
+		{code: 200, body: fmt.Sprintf(`{"id":"c","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"map_column","arguments":%s}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, good)},
+		{code: 200, body: completionBody("已映射")},
+	})
+	er := &execRecorder{}
+	tools := NewTools()
+	_ = tools.Register("map_column", mapColumnTool(), er.exec)
+	runner := NewRunner(tools, WithHTTPClient(&http.Client{Transport: rb.srv.Client().Transport}))
+
+	resp, err := runner.Run(context.Background(), testModel(t, rb.srv.URL, registry.ToolCallingFull), baseParams())
+	if err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if resp.Choices[0].Message.Content == nil {
+		t.Error("最终响应应为文本回答")
+	}
+	if er.count() != 1 {
+		t.Errorf("非法 arguments 轮不应执行工具（应回喂重试），执行次数=%d", er.count())
+	}
+	if rb.count() != 3 {
+		t.Errorf("应 3 次上游调用（非法轮+合法轮+最终回答），得到 %d", rb.count())
+	}
+}
+
+// TestRunToolResultTruncation：超大工具结果按上限截断并附标记（评审修正）。
+func TestRunToolResultTruncation(t *testing.T) {
+	big := strings.Repeat("数", 20000)
+	rb := newSequenceBackend(t, []cannedResponse{
+		{code: 200, body: toolCallsBody("map_column")},
+		{code: 200, body: completionBody("完成")},
+	})
+	tools := NewTools()
+	_ = tools.Register("map_column", mapColumnTool(), func(ctx context.Context, call backend.ToolCall) (string, error) {
+		return big, nil
+	})
+	runner := NewRunner(tools, WithHTTPClient(&http.Client{Transport: rb.srv.Client().Transport}), WithToolResultMaxRunes(64))
+
+	_, err := runner.Run(context.Background(), testModel(t, rb.srv.URL, registry.ToolCallingFull), baseParams())
+	if err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	// 第二轮请求的 tool 消息 content 应被截断（64 rune + 标记）。
+	req := rb.req(1)
+	msgs, _ := req["messages"].([]any)
+	var toolContent string
+	for _, m := range msgs {
+		mm, _ := m.(map[string]any)
+		if mm["role"] == "tool" {
+			toolContent, _ = mm["content"].(string)
+		}
+	}
+	if !strings.Contains(toolContent, "[结果已截断") {
+		t.Errorf("工具结果应截断并附标记，得到前 80 字符: %q", truncateStr(toolContent, 80))
+	}
+	if len([]rune(toolContent)) >= 20000 {
+		t.Error("回填内容应显著短于原始结果")
+	}
+}
+
+// TestRunAuditToolResults：审计 CallRecord 携带工具执行概要（评审修正 F6）。
+func TestRunAuditToolResults(t *testing.T) {
+	rb := newSequenceBackend(t, []cannedResponse{
+		{code: 200, body: toolCallsBody("map_column")},
+		{code: 200, body: completionBody("完成")},
+	})
+	er := &execRecorder{}
+	tools := NewTools()
+	_ = tools.Register("map_column", mapColumnTool(), er.exec)
+	var recs []audit.CallRecord
+	runner := NewRunner(tools, WithHTTPClient(&http.Client{Transport: rb.srv.Client().Transport}), WithOnCall(func(r audit.CallRecord) { recs = append(recs, r) }))
+
+	_, err := runner.Run(context.Background(), testModel(t, rb.srv.URL, registry.ToolCallingFull), baseParams())
+	if err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	found := false
+	for _, r := range recs {
+		if len(r.ToolResults) == 1 && r.ToolResults[0].Name == "map_column" && r.ToolResults[0].Error == "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("第 2 轮审计应携带工具执行概要（map_column 成功），记录=%+v", recs)
+	}
+}
+
+// TestRunToolPanicAudited：工具 panic 路径（F2）入审计（评审修正 F6）。
+func TestRunToolPanicAudited(t *testing.T) {
+	rb := newSequenceBackend(t, []cannedResponse{
+		{code: 200, body: toolCallsBody("map_column")},
+		{code: 200, body: completionBody("完成")},
+	})
+	tools := NewTools()
+	_ = tools.Register("map_column", mapColumnTool(), func(ctx context.Context, call backend.ToolCall) (string, error) {
+		panic("boom")
+	})
+	var recs []audit.CallRecord
+	runner := NewRunner(tools, WithHTTPClient(&http.Client{Transport: rb.srv.Client().Transport}), WithOnCall(func(r audit.CallRecord) { recs = append(recs, r) }))
+
+	_, err := runner.Run(context.Background(), testModel(t, rb.srv.URL, registry.ToolCallingFull), baseParams())
+	if err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	found := false
+	for _, r := range recs {
+		for _, tr := range r.ToolResults {
+			if tr.Name == "map_column" && strings.Contains(tr.Error, "panic") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("工具 panic 应入审计 ToolResults，记录=%+v", recs)
+	}
+}
+
+// TestRunJSONModeOutputValidation：response_format.json_object 下响应 content
+// 非合法 JSON → 校验失败回喂重试（KTD6 计划承诺：输出必须做 schema 校验）。
+func TestRunJSONModeOutputValidation(t *testing.T) {
+	rb := newSequenceBackend(t, []cannedResponse{
+		{code: 200, body: completionBody("这不是 JSON")},
+		{code: 200, body: completionBody(`{"mapped": "customer_name"}`)},
+	})
+	runner := NewRunner(nil, WithHTTPClient(&http.Client{Transport: rb.srv.Client().Transport}))
+	// 无工具请求（JSON mode 校验与注入策略无关）。
+	params := map[string]any{
+		"model":           "gemma-4-e4b",
+		"messages":        []any{map[string]any{"role": "user", "content": "输出 JSON"}},
+		"response_format": map[string]any{"type": "json_object"},
+	}
+
+	resp, err := runner.Run(context.Background(), testModel(t, rb.srv.URL, registry.ToolCallingNone), params)
+	if err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if rb.count() != 2 {
+		t.Errorf("JSON mode 非法输出应触发重试，调用次数=%d", rb.count())
+	}
+	var content string
+	if err := json.Unmarshal(resp.Choices[0].Message.Content, &content); err != nil || content != `{"mapped": "customer_name"}` {
+		t.Errorf("最终响应应为合法 JSON 文本，得到 %s", resp.Choices[0].Message.Content)
+	}
+}
+
+// TestRunDefaultHTTPTimeout：默认装配下内部 client 应用非流式默认超时
+// （评审修正 P1：默认装配不得绕过 30s 超时契约；同包测试直接断言内部配置）。
+func TestRunDefaultHTTPTimeout(t *testing.T) {
+	runner := NewRunner(nil)
+	if runner.client == nil || runner.client.RequestTimeout != backend.DefaultRequestTimeout {
+		t.Errorf("默认装配下内部 client 应应用 backend.DefaultRequestTimeout=%s，得到 %+v",
+			backend.DefaultRequestTimeout, runner.client)
+	}
+	// 注入的 client 若未设 Timeout，backend.NewClient 仍应应用默认超时（双保险）。
+	runner2 := NewRunner(nil, WithHTTPClient(&http.Client{}))
+	if runner2.client.RequestTimeout != backend.DefaultRequestTimeout {
+		t.Errorf("注入无超时 client 时仍应应用默认超时，得到 %v", runner2.client.RequestTimeout)
+	}
+}
+
+// TestNewRunnerDoesNotMutateInjectedClient：注入 client 的 Transport 不被就地改写
+// （评审修正：共享 client 无副作用）。
+func TestNewRunnerDoesNotMutateInjectedClient(t *testing.T) {
+	hc := &http.Client{}
+	before := hc.Transport
+	_ = NewRunner(nil, WithHTTPClient(hc))
+	if hc.Transport != before {
+		t.Error("NewRunner 不得改写消费方注入 client 的 Transport")
+	}
+}
+
+// truncateStr 测试辅助：截断展示用。
+func truncateStr(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
 }

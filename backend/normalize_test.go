@@ -146,7 +146,7 @@ func TestNormalizeResponseFinishReasonWhitelist(t *testing.T) {
 		{"content_filter", "content_filter"},
 		{"", "stop"},           // 缺失归为 stop
 		{"max_tokens", "stop"}, // 非规范枚举归为 stop（KTD8）
-		{"function_call", "stop"},
+		{"function_call", "tool_calls"}, // 废弃枚举语义等价映射（评审修正）
 	}
 	for _, tc := range cases {
 		body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"` + tc.in + `"}]}`)
@@ -234,5 +234,74 @@ func TestSanitizeMessageTruncates(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, strings.Repeat("密", 497)) || !strings.HasSuffix(got, "...") {
 		t.Errorf("截断应保留前缀并加 ... 标记，得到 %q", got)
+	}
+}
+
+func TestSanitizeMessageStripsSecrets(t *testing.T) {
+	// 评审修正 P0：sk- 前缀 API key、Bearer token、JWT、Authorization 头不得外泄。
+	cases := []struct{ in, want string }{
+		{"invalid key sk-abcdefghijklmnop", "invalid key [redacted]"},
+		{"unauthorized: Bearer sk-live-1234567890abc", "unauthorized: [redacted]"},
+		{"jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456 was rejected", "jwt [redacted] was rejected"},
+		{"api_key=supersecret123 failed", "[redacted] failed"}, // key=value 凭据形态剥离
+		{"Authorization: Bearer tok12345", "[redacted]"},
+	}
+	for _, tc := range cases {
+		if got := SanitizeMessage(tc.in); got != tc.want {
+			t.Errorf("SanitizeMessage(%q) 应得 %q，得到 %q", tc.in, tc.want, got)
+		}
+	}
+}
+
+func TestNormalizeArgumentsObjectToJSONString(t *testing.T) {
+	// 评审修正：对象形态 arguments 应重写为 JSON 字符串（契约：arguments 为 JSON 字符串）。
+	raw := json.RawMessage(`{"column":"客户名","standard_field":"customer_name"}`)
+	out, err := NormalizeArguments(raw)
+	if err != nil {
+		t.Fatalf("对象形态归一化不应失败: %v", err)
+	}
+	var s string
+	if err := json.Unmarshal(out, &s); err != nil {
+		t.Fatalf("归一化结果应为 JSON 字符串，得到 %s", out)
+	}
+	if !json.Valid([]byte(s)) {
+		t.Errorf("字符串内容应为合法 JSON，得到 %q", s)
+	}
+	if s != `{"column":"客户名","standard_field":"customer_name"}` {
+		t.Errorf("字符串内容应紧凑化保真，得到 %q", s)
+	}
+}
+
+func TestNormalizeArgumentsStringPassthrough(t *testing.T) {
+	// 已是 JSON 字符串形态且内容合法：原样保留。
+	raw := json.RawMessage(`"{\"column\":\"x\"}"`)
+	out, err := NormalizeArguments(raw)
+	if err != nil {
+		t.Fatalf("字符串形态归一化不应失败: %v", err)
+	}
+	if string(out) != string(raw) {
+		t.Errorf("字符串形态应原样保留，得到 %s", out)
+	}
+	// 字符串内容非法 JSON：报错。
+	bad := json.RawMessage(`"not json"`)
+	if _, err := NormalizeArguments(bad); err == nil {
+		t.Error("内容非 JSON 的字符串应报错")
+	}
+}
+
+func TestNormalizeResponseWrapsObjectArguments(t *testing.T) {
+	// 响应归一化：对象形态 arguments 被重写为 JSON 字符串（full/partial 透传契约）。
+	body := []byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":{"column":"x"}}}]},"finish_reason":"tool_calls"}]}`)
+	c, err := NormalizeResponse(body)
+	if err != nil {
+		t.Fatalf("NormalizeResponse 失败: %v", err)
+	}
+	args := c.Choices[0].Message.ToolCalls[0].Function.Arguments
+	var s string
+	if err := json.Unmarshal(args, &s); err != nil {
+		t.Fatalf("arguments 应为 JSON 字符串，得到 %s", args)
+	}
+	if s != `{"column":"x"}` {
+		t.Errorf("arguments 内容应紧凑保真，得到 %q", s)
 	}
 }
