@@ -185,7 +185,7 @@ e4b 无原生工具调用，经注入策略正确输出标准 tool_calls（网�
 
 **场景 3：stream=true → SSE 流（透传）** ✅ 751 个事件：首 chunk 带 `delta.role=assistant`、203 个 content 增量 chunk、末 chunk `finish_reason=stop`、`data: [DONE]` 结尾；chunk 的 `model` 回显注册表 ID。
 
-**场景 4：stream=true + tools → SSE 模拟流（tool_calls delta）** ✅ 事件序列含 `delta.tool_calls[{index,id,type,function.name}]` 首块与 arguments 增量、末 chunk `finish_reason=tool_calls`、`data: [DONE]`。
+**场景 4：stream=true + tools → SSE 模拟流（tool_calls delta）** ✅ 事件序列含 `delta.tool_calls[{index,id,type,function.name}]` 首块与 arguments 增量、末 chunk `finish_reason=tool_calls`、`data: [DONE]`。循环/工具执行阶段客户端持续收到 `: keep-alive` 心跳注释行（实测 3 条，循环耗时约 45s）——长循环经代理/LB 不被切断。
 
 **审计样例**（示例服务 stdout）：`{"duration_ms":21143,"error":"","messages":1,"model":"gemma-4-e4b","output":"","round":0,"strategy":"none","stream":false,"tools":["map_column"],"truncated":false}`——注入策略（none）、工具列表、耗时均正确记录。
 
@@ -197,7 +197,7 @@ e4b 无原生工具调用，经注入策略正确输出标准 tool_calls（网�
 - **工具参数是模型受控的不可信输入**：网关按工具声明的 schema 做 shape 校验，消费方工具内部仍须自行做业务校验。
 - **审计负载是敏感数据通道**：消费方落库时须脱敏、设定保留期与访问控制；示例 stdout 打印仅限演示。
 - **http.Server 配置**：SSE 长流场景建议 `WriteTimeout: 0`（库内已用 SetWriteDeadline 逐次续期）；代理/LB 的 idle 超时须大于心跳间隔 15s。
-- **超时与上限**：非流式调用 30s、流式读取 5m、per-tool 30s、单请求上游调用上限 12、心跳 15s——均可配置。
+- **超时与上限**：非流式调用 30s（示例服务注入 60s——注入策略含 few-shot 的 prompt 在本地 4B 模型上实测需 20-40s 生成，30s 会截断真实调用，联调发现）、流式读取 5m、per-tool 30s、单请求上游调用上限 12、心跳 15s——均可配置。
 
 ## 二期范围（明确不做）
 

@@ -49,7 +49,11 @@ func main() {
 	notifier.SetOnCall(printAudit)
 	// 示例不注册工具执行器：带 tools 的请求返回标准 tool_calls，
 	// 由消费方执行后以标准 OpenAI 多轮回传（KTD3）。
-	runner := loop.NewRunner(nil, loop.WithOnCall(notifier.Notify))
+	// 推理循环注入 60s 非流式超时：注入策略（含 few-shot 的 prompt）在
+	// 本地 4B 模型上实测需 20-40s 生成，30s 默认值会截断真实调用（联调发现）。
+	runner := loop.NewRunner(nil,
+		loop.WithHTTPClient(&http.Client{Timeout: 60 * time.Second}),
+		loop.WithOnCall(notifier.Notify))
 
 	srv := api.NewServer(api.ServerConfig{
 		HandlerConfig: api.HandlerConfig{
