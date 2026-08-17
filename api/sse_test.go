@@ -210,7 +210,7 @@ func TestProxyStreamPassthrough(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		c := parseChunk(t, events[i])
-		if c.ID != "chatcmpl-1" || c.Object != "chat.completion.chunk" || c.Model != "m" {
+		if c.ID != "chatcmpl-1" || c.Object != "chat.completion.chunk" || c.Model != "gemma-4-e4b" {
 			t.Errorf("chunk %d 骨架不符: %+v", i, c)
 		}
 	}

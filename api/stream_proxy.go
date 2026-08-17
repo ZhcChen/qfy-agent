@@ -135,7 +135,7 @@ func (p *streamProxy) forward(sse *SSEWriter, data string) error {
 	if err := json.Unmarshal([]byte(data), &c); err != nil {
 		return sse.WriteEvent([]byte(data))
 	}
-	rewriteChunk(&c)
+	rewriteChunk(&c, p.opts.Model)
 	p.accumulate(c)
 	b, err := json.Marshal(&c)
 	if err != nil {
@@ -292,9 +292,14 @@ type streamFunction struct {
 
 // rewriteChunk 白名单化单个 chunk：object 规范化为 chat.completion.chunk，
 // finish_reason 白名单化（仅 stop|length|tool_calls|content_filter，未知归 stop，KTD8）。
-func rewriteChunk(c *streamChunk) {
+// model 覆盖为注册表模型 ID（非空时），使透传流与请求/非流式路径的 model 回显一致
+// （R3：响应 model 回显请求使用的对外模型 id）。
+func rewriteChunk(c *streamChunk, modelID string) {
 	if c.Object != "chat.completion.chunk" {
 		c.Object = "chat.completion.chunk"
+	}
+	if modelID != "" {
+		c.Model = modelID
 	}
 	for i := range c.Choices {
 		if c.Choices[i].FinishReason != nil {
