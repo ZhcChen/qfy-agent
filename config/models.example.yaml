@@ -15,7 +15,10 @@ models:
     model: google/gemma-4-e4b
     capabilities:
       tool_calling: none
-      json_mode: true
+      # json_mode=false：LM Studio 实测不支持 response_format.type=json_object
+      # （仅接受 json_schema|text，2026-08-18 联调确认）；网关对 json_object
+      # 请求返回明确 400 json_mode_not_supported，消费方改用 prompt 约束输出 JSON。
+      json_mode: false
       streaming: true
     default_params:
       temperature: 0.2
@@ -29,7 +32,7 @@ models:
     model: google/gemma-4-12b
     capabilities:
       tool_calling: partial
-      json_mode: true
+      json_mode: false
       streaming: true
     default_params:
       temperature: 0.2

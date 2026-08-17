@@ -78,12 +78,14 @@ models:
     model: google/gemma-4-e4b       # 后端实际模型 id（可与对外 ID 不同）
     capabilities:
       tool_calling: none            # full | partial | none
-      json_mode: true
-      streaming: true
+      json_mode: false              # 后端是否原生支持 response_format.json_object
+      streaming: true               # 后端是否支持真实 SSE 流式
     default_params:                 # 参数抹平：外部未显式指定时填充
       temperature: 0.2
       max_tokens: 2048
 ```
+
+能力字段的行为契约：`streaming: false` 时 `stream=true` 请求走非流式调用 + 缓冲模拟流（不静默透传）；`json_mode: false` 时 `response_format.json_object` 请求返回明确的 `400 json_mode_not_supported`（消费方改用 prompt 约束输出 JSON）。示例配置中两条模型均为 `json_mode: false`——LM Studio 实测不支持 `response_format.type=json_object`（仅接受 `json_schema|text`，2026-08-18 联调确认），能力按后端真实情况如实声明。
 
 库本身**不读取环境变量、不触碰文件系统**（R18）：消费方读取配置文件后调用 `registry.Load` 注入。新增模型只改配置不改代码。
 
@@ -161,6 +163,8 @@ runner := loop.NewRunner(tools, loop.WithOnCall(notifier.Notify))
 ## 真实联调验证（LM Studio · gemma-4-e4b）
 
 验证时间：2026-08-18；后端：`http://192.168.1.91:1234/v1`（LM Studio，模型 google/gemma-4-e4b，`tool_calling: none`）。
+
+**联调能力校准（重要）**：LM Studio 不支持 `response_format.type=json_object`（实测返回 400 `'response_format.type' must be 'json_schema' or 'text'`）。因此示例配置 `json_mode: false`，网关对 json_object 请求返回明确 `400 json_mode_not_supported`，消费方以 prompt 约束输出 JSON。
 
 **场景 1：普通 chat** ✅ 返回标准响应骨架（id/object/created/model/choices/usage 齐全，finish_reason=stop）。
 
