@@ -36,7 +36,7 @@ execution: code
 **OpenAI 兼容 API 入口**
 
 - R1. 提供 `GET /v1/models`，按 OpenAI 规范返回注册表中的模型列表。
-- R2. 提供 `POST /v1/chat/completions`，支持 messages、temperature、max_tokens、tools、tool_choice、response_format（json_object）、stream 参数。
+- R2. 提供 `POST /v1/chat/completions`，支持 messages、temperature、max_tokens、tools、tool_choice、response_format（json_object）、stream、stream_options（include_usage）参数。
 - R3. 请求与响应严格遵循 OpenAI 规范：非流式响应骨架、SSE chunk 与 tool_calls delta 结构、`data: [DONE]` 结尾、标准 error 事件与错误体格式。
 
 **模型能力声明与适配层**
