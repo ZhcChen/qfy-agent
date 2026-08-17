@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/qfy-agent/qfy-agent/audit"
+	"github.com/qfy-agent/qfy-agent/backend"
 )
 
 // DefaultSummaryRunes 流式输出摘要（content 与工具参数）保留的 rune 数上限。
@@ -303,20 +304,10 @@ func rewriteChunk(c *streamChunk, modelID string) {
 	}
 	for i := range c.Choices {
 		if c.Choices[i].FinishReason != nil {
-			fr := normalizeFinishReason(*c.Choices[i].FinishReason)
+			fr := backend.NormalizeFinishReason(*c.Choices[i].FinishReason)
 			c.Choices[i].FinishReason = &fr
 		}
 	}
-}
-
-// normalizeFinishReason finish_reason 白名单（KTD8，与 backend 层语义一致）：
-// 仅输出 stop|length|tool_calls|content_filter，未知值统一归为 stop。
-func normalizeFinishReason(fr string) string {
-	switch fr {
-	case "stop", "length", "tool_calls", "content_filter":
-		return fr
-	}
-	return "stop"
 }
 
 // runePrefix 保留前 limit 个 rune 的前缀累积器（内容/工具参数摘要）。

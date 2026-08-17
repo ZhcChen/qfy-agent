@@ -109,7 +109,7 @@ func simulateChoice(sse *SSEWriter, base streamChunk, ch backend.Choice, chunkSi
 		}
 	}
 	// 末 chunk：delta={} 且 finish_reason 非 null（白名单化，KTD8）。
-	fr := normalizeFinishReason(ch.FinishReason)
+	fr := backend.NormalizeFinishReason(ch.FinishReason)
 	return writeSimChunk(sse, base, idx, streamDelta{}, fr)
 }
 

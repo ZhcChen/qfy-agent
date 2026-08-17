@@ -97,7 +97,7 @@ func NormalizeResponse(body []byte) (*ChatCompletion, error) {
 		c.Choices = []Choice{}
 	}
 	for i := range c.Choices {
-		c.Choices[i].FinishReason = normalizeFinishReason(c.Choices[i].FinishReason)
+		c.Choices[i].FinishReason = NormalizeFinishReason(c.Choices[i].FinishReason)
 	}
 	return &c, nil
 }
@@ -112,7 +112,11 @@ var validFinishReasons = map[string]bool{
 	"content_filter": true,
 }
 
-func normalizeFinishReason(fr string) string {
+// NormalizeFinishReason 把 finish_reason 白名单化（KTD8）：仅输出
+// stop|length|tool_calls|content_filter。未知值（含缺失）统一归为 stop——语义最接近
+// "正常结束"，且不会被上层误判为 length/tool_calls/content_filter 等触发重试或降级的
+// 特殊语义。导出供 api 层流式透传复用（单一实现，避免跨包漂移）。
+func NormalizeFinishReason(fr string) string {
 	if validFinishReasons[fr] {
 		return fr
 	}
