@@ -1,8 +1,8 @@
 // Package audit 定义审计记录与回调钩子（U5，R17/KTD9）。
 //
-// CallRecord 是单次后端调用的审计快照，统一由 loop 层产出（KTD9），
-// api/流式层只中继、不重复创建。OnCall 为可配置回调：Notifier 以 recover
-// 包裹调用，回调 panic 不影响请求响应（KTD9）。
+// CallRecord 是单次后端调用的审计快照（KTD9）：非流式路径统一由 loop 层产出，
+// 流式透传路径由 api 层在流结束/中断时产出（评审修正 G2）。
+// OnCall 为可配置回调：Notifier 以 recover 包裹调用，回调 panic 不影响请求响应。
 //
 // 执行模型（F1）：回调在请求 goroutine 内同步触发；并发请求下回调被并发
 // 调用，消费方落库逻辑须自保证并发安全；库不碰数据库（R17）。
@@ -46,7 +46,8 @@ type ToolCallSummary struct {
 	Arguments string
 }
 
-// CallRecord 单次后端调用的审计记录（KTD9：统一由 loop 层产出）。
+// CallRecord 单次后端调用的审计记录（KTD9：非流式由 loop 层产出；
+// 流式透传由 api 层在流结束或中断时产出，评审修正 G2）。
 type CallRecord struct {
 	// Timestamp 调用时间戳。
 	Timestamp time.Time
@@ -64,8 +65,10 @@ type CallRecord struct {
 	Error string
 	// Round 轮次（从 0 开始）。
 	Round int
-	// Stream 是否流式调用（非流式循环恒为 false；流式由 api 层中继）。
+	// Stream 是否流式调用（非流式循环恒为 false；流式透传恒为 true，由 api 层产出）。
 	Stream bool
+	// Truncated 上游流是否截断（缺 [DONE]；仅流式透传记录，由 api 层产出）。
+	Truncated bool
 }
 
 // Notifier 并发安全的审计通知器（F5）：支持运行期配置回调，
