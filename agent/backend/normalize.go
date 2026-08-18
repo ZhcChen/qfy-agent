@@ -52,6 +52,28 @@ type Message struct {
 	Role      string          `json:"role"`
 	Content   json.RawMessage `json:"content"`
 	ToolCalls []ToolCall      `json:"tool_calls,omitempty"`
+
+	reasoningContent json.RawMessage
+}
+
+// UnmarshalJSON 捕获 LM Studio 的 reasoning_content 扩展供内部完整性判定，
+// 同时保持 Message 的对外 JSON 白名单不包含该字段。
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type messageWire struct {
+		Role             string          `json:"role"`
+		Content          json.RawMessage `json:"content"`
+		ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+		ReasoningContent json.RawMessage `json:"reasoning_content"`
+	}
+	var wire messageWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	m.Role = wire.Role
+	m.Content = wire.Content
+	m.ToolCalls = wire.ToolCalls
+	m.reasoningContent = wire.ReasoningContent
+	return nil
 }
 
 // ToolCall 标准工具调用结构（R10 消费方可见形态）。
@@ -97,6 +119,8 @@ func NormalizeResponse(body []byte) (*ChatCompletion, error) {
 	if c.Choices == nil {
 		c.Choices = []Choice{}
 	}
+	responseHasVisibleOutput := false
+	responseHasReasoningOnlyLength := false
 	for i := range c.Choices {
 		c.Choices[i].FinishReason = NormalizeFinishReason(c.Choices[i].FinishReason)
 		for j := range c.Choices[i].Message.ToolCalls {
@@ -104,8 +128,39 @@ func NormalizeResponse(body []byte) (*ChatCompletion, error) {
 				c.Choices[i].Message.ToolCalls[j].Function.Arguments = args
 			}
 		}
+		choiceHasVisibleOutput := len(c.Choices[i].Message.ToolCalls) > 0 || hasVisibleContent(c.Choices[i].Message.Content)
+		responseHasVisibleOutput = responseHasVisibleOutput || choiceHasVisibleOutput
+		if c.Choices[i].FinishReason == "length" && !choiceHasVisibleOutput &&
+			hasReasoningContent(c.Choices[i].Message.reasoningContent) {
+			responseHasReasoningOnlyLength = true
+		}
+	}
+	if responseHasReasoningOnlyLength && !responseHasVisibleOutput {
+		return nil, &IncompleteResponseError{}
 	}
 	return &c, nil
+}
+
+func hasVisibleContent(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text != ""
+	}
+	return true
+}
+
+func hasReasoningContent(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text) != ""
+	}
+	return true
 }
 
 // NormalizeArguments 把 function.arguments 统一为 JSON 字符串形态（契约：消费方

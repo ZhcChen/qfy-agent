@@ -80,6 +80,15 @@ func (e *MalformedError) Error() string {
 // Unwrap 暴露底层错误。
 func (e *MalformedError) Unwrap() error { return e.Err }
 
+// IncompleteResponseError 表示上游只产生了非标准推理内容，因长度上限结束，
+// 但没有生成任何对外可见的 content 或 tool_calls。推理原文不会写入错误，
+// 避免把模型内部推理泄漏给调用方或日志。
+type IncompleteResponseError struct{}
+
+func (e *IncompleteResponseError) Error() string {
+	return "上游模型输出长度已耗尽，但未生成可见内容"
+}
+
 // Option 配置 Client。
 type Option func(*Client)
 

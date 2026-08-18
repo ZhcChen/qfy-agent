@@ -314,6 +314,74 @@ func TestProxyStreamFinishReasonWhitelist(t *testing.T) {
 	}
 }
 
+func TestProxyStreamRejectsReasoningOnlyLengthResponse(t *testing.T) {
+	chunks := []string{
+		`{"id":"c1","object":"chat.completion.chunk","created":2,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"internal"},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":2,"model":"m","choices":[{"index":0,"delta":{"reasoning_content":" reasoning"},"finish_reason":"length"}]}`,
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	srv, rec, errCh := serveProxy(t, upstream.URL, ProxyOptions{Model: "gemma-4-e4b", Strategy: "direct"})
+	defer srv.Close()
+	body := getBody(t, srv.URL)
+	events := parseSSE(t, body)
+	if len(events) != 4 {
+		t.Fatalf("应收到 2 个白名单 chunk、错误事件和 [DONE]，得到 %d: %v", len(events), events)
+	}
+	if strings.Contains(body, "internal reasoning") || strings.Contains(body, "reasoning_content") {
+		t.Fatalf("不得向客户端泄露 reasoning_content，得到 %s", body)
+	}
+	var errorEvent struct {
+		Error backend.ErrorBody `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(events[2]), &errorEvent); err != nil {
+		t.Fatalf("错误事件应为 JSON: %v", err)
+	}
+	if errorEvent.Error.Code != "upstream_incomplete_response" {
+		t.Errorf("错误码应稳定为 upstream_incomplete_response，得到 %q", errorEvent.Error.Code)
+	}
+	if events[3] != "[DONE]" {
+		t.Errorf("错误事件后应以 [DONE] 结束，得到 %q", events[3])
+	}
+	var incomplete *backend.IncompleteResponseError
+	if err := <-errCh; !errors.As(err, &incomplete) {
+		t.Fatalf("应返回 *backend.IncompleteResponseError，得到 %v", err)
+	}
+	recs := rec.get()
+	if len(recs) != 1 || recs[0].Error == "" || recs[0].Truncated {
+		t.Fatalf("应记录非截断的稳定错误审计，得到 %+v", recs)
+	}
+}
+
+func TestProxyStreamRejectsMalformedChunkWithoutLeakingIt(t *testing.T) {
+	secret := "private-reasoning"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":%q},}]}\n\n", secret)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	srv, _, errCh := serveProxy(t, upstream.URL, ProxyOptions{Model: "gemma-4-e4b", Strategy: "direct"})
+	defer srv.Close()
+	body := getBody(t, srv.URL)
+	if strings.Contains(body, secret) || strings.Contains(body, "reasoning_content") {
+		t.Fatalf("畸形 chunk 不得原样透传: %s", body)
+	}
+	if !strings.Contains(body, `"code":"upstream_malformed_response"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("应返回受控错误事件并结束流: %s", body)
+	}
+	var malformed *backend.MalformedError
+	if err := <-errCh; !errors.As(err, &malformed) {
+		t.Fatalf("应返回 *backend.MalformedError，得到 %v", err)
+	}
+}
+
 // TestProxyStreamTruncated 透传：上游缺 [DONE]（提前 EOF）→ 错误事件 + [DONE]，
 // Truncated=true 的 CallRecord 到达 OnCall。
 func TestProxyStreamTruncated(t *testing.T) {
@@ -373,7 +441,7 @@ func TestProxyStreamTruncated(t *testing.T) {
 	}
 }
 
-// TestProxyStreamMalformedForward 透传：畸形（非 JSON）data 行原样转发（防御性），流不中断。
+// TestProxyStreamMalformedForward：畸形 data 行不得绕过白名单原样透传。
 func TestProxyStreamMalformedForward(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "data: not json at all\n\n")
@@ -386,14 +454,15 @@ func TestProxyStreamMalformedForward(t *testing.T) {
 	defer srv.Close()
 
 	events := parseSSE(t, getBody(t, srv.URL))
-	if len(events) != 2 || events[0] != "not json at all" || events[1] != "[DONE]" {
-		t.Fatalf("畸形行应原样转发且流不中断: %v", events)
+	if len(events) != 2 || !strings.Contains(events[0], `"code":"upstream_malformed_response"`) || events[1] != "[DONE]" {
+		t.Fatalf("畸形行应转换为受控错误并结束流: %v", events)
 	}
-	if err := <-errCh; err != nil {
-		t.Errorf("畸形行不应视为截断: %v", err)
+	var malformed *backend.MalformedError
+	if err := <-errCh; !errors.As(err, &malformed) {
+		t.Errorf("畸形行应返回 *backend.MalformedError: %v", err)
 	}
-	if recs := rec.get(); len(recs) != 1 || recs[0].Truncated {
-		t.Errorf("畸形行场景应正常结束（非截断），记录: %+v", recs)
+	if recs := rec.get(); len(recs) != 1 || recs[0].Truncated || recs[0].Error == "" {
+		t.Errorf("畸形行场景应记录非截断错误: %+v", recs)
 	}
 }
 

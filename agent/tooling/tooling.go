@@ -198,6 +198,10 @@ func (s *Strategies) callPartial(ctx context.Context, m *registry.Model, params 
 // 后端大概率继续超时，降级只会让单轮延迟翻倍、燃烧预算）；一般网络错误与
 // MalformedError（响应畸形）原样上抛。
 func isDegradable(err error) bool {
+	var incomplete *backend.IncompleteResponseError
+	if errors.As(err, &incomplete) {
+		return true
+	}
 	var ue *backend.UnavailableError
 	if errors.As(err, &ue) {
 		return !ue.Timeout
@@ -403,4 +407,3 @@ func ParseTools(raw any) ([]Tool, error) {
 	}
 	return out, nil
 }
-

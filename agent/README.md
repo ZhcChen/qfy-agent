@@ -48,7 +48,7 @@
 | 能力 | 策略 |
 |---|---|
 | `tool_calling: full` | tools 原样透传后端，tool_calls 原样返回 |
-| `tool_calling: partial` | 首轮原生透传；后端调用失败或 tool_calls 结构非法时，本轮自动降级为注入策略重试 |
+| `tool_calling: partial` | 首轮原生透传；后端调用失败、tool_calls 结构非法或仅产生推理内容时，本轮自动降级为注入策略重试 |
 | `tool_calling: none` | 适配层把 tools 描述改写为 prompt 注入（"可用工具 + 必须输出 JSON"约束 + few-shot），模型输出 JSON 经解析、校验后包装为标准 tool_calls |
 
 注入输出解析按序降级：直接 JSON 解析 → 剥离代码围栏 → 括号配对提取。`arguments` 按工具声明的 JSON Schema 校验（必填、类型），校验失败的错误回喂模型重试（最多 2 次），仍失败返回稳定错误——绝不让模型自由输出。
@@ -89,6 +89,8 @@ models:
 
 能力字段的行为契约：`streaming: false` 时 `stream=true` 请求走非流式调用 + 缓冲模拟流（不静默透传）；`json_mode: false` 时 `response_format.json_object` 请求返回明确的 `400 json_mode_not_supported`（消费方改用 prompt 约束输出 JSON）。示例配置中两条模型均为 `json_mode: false`——LM Studio 实测不支持 `response_format.type=json_object`（仅接受 `json_schema|text`，2026-08-18 联调确认），能力按后端真实情况如实声明。
 
+LM Studio 等后端可能返回非标准 `reasoning_content`。网关不会把内部推理映射到 `content` 或向下游透传；当响应只有推理内容、没有可见正文或工具调用，并以 `finish_reason=length` 结束时，网关返回 `502 upstream_incomplete_response`，提示调用方提高 `max_tokens` 或调整模型推理设置。真实 SSE 使用同一错误码在 `[DONE]` 前发送 error 事件。
+
 库本身**不读取环境变量、不触碰文件系统**（R18）：消费方读取配置文件后调用 `registry.Load` 注入。新增模型只改配置不改代码。
 
 ## 快速开始
@@ -96,6 +98,17 @@ models:
 ```bash
 # 启动示例服务（默认 127.0.0.1:8080，可 -config 指定配置、-addr 指定监听）
 go run ./agent/cmd/qfy-agent-server -config agent/config/models.example.yaml -addr 127.0.0.1:8080
+```
+
+### 后端能力探测
+
+使用标准库探测工具复核 OpenAI-compatible 后端的模型列表、普通 Chat、JSON mode、原生工具调用和 SSE。命令输出一行 JSON；`json_object` 为 `unsupported` 不会单独导致失败，目标模型不可用、普通 Chat/原生工具/SSE 不可用时退出码为非零。
+
+```bash
+go run ./agent/cmd/qfy-agent-probe \
+  -base-url http://192.168.1.91:1234/v1 \
+  -model google/gemma-4-e4b \
+  -max-tokens 512
 ```
 
 ```bash
@@ -164,7 +177,7 @@ runner := loop.NewRunner(tools, loop.WithOnCall(notifier.Notify))
 
 ## 真实联调验证（LM Studio · gemma-4-e4b）
 
-验证时间：2026-08-18；后端：`http://192.168.1.91:1234/v1`（LM Studio，模型 google/gemma-4-e4b，`tool_calling: none`）。
+验证时间：2026-08-18；后端：`http://192.168.1.91:1234/v1`（LM Studio，模型 google/gemma-4-e4b，`tool_calling: partial`）。
 
 **联调能力校准（重要）**：LM Studio 不支持 `response_format.type=json_object`（实测返回 400 `'response_format.type' must be 'json_schema' or 'text'`）。因此示例配置 `json_mode: false`，网关对 json_object 请求返回明确 `400 json_mode_not_supported`，消费方以 prompt 约束输出 JSON。
 
@@ -187,7 +200,7 @@ runner := loop.NewRunner(tools, loop.WithOnCall(notifier.Notify))
 }
 ```
 
-e4b 无原生工具调用，经注入策略正确输出标准 tool_calls（网关生成 id、arguments 为合法 JSON 字符串、schema 校验通过）。
+e4b 当前可返回标准原生 tool_calls；配置采用 partial 以保留结构异常或 reasoning-only 时的注入降级。网关会把 arguments 归一化为合法 JSON 字符串；注入降级路径还会按工具 schema 校验参数。
 
 **场景 3：stream=true → SSE 流（透传）** ✅ 751 个事件：首 chunk 带 `delta.role=assistant`、203 个 content 增量 chunk、末 chunk `finish_reason=stop`、`data: [DONE]` 结尾；chunk 的 `model` 回显注册表 ID。
 

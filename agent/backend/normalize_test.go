@@ -144,8 +144,8 @@ func TestNormalizeResponseFinishReasonWhitelist(t *testing.T) {
 		{"length", "length"},
 		{"tool_calls", "tool_calls"},
 		{"content_filter", "content_filter"},
-		{"", "stop"},           // 缺失归为 stop
-		{"max_tokens", "stop"}, // 非规范枚举归为 stop（KTD8）
+		{"", "stop"},                    // 缺失归为 stop
+		{"max_tokens", "stop"},          // 非规范枚举归为 stop（KTD8）
 		{"function_call", "tool_calls"}, // 废弃枚举语义等价映射（评审修正）
 	}
 	for _, tc := range cases {
@@ -172,6 +172,51 @@ func TestNormalizeResponseMalformed(t *testing.T) {
 		if !errors.As(err, &me) {
 			t.Errorf("畸形响应 %q 应返回 *MalformedError，得到 %v", body, err)
 		}
+	}
+}
+
+func TestNormalizeResponseRejectsReasoningOnlyLengthResponse(t *testing.T) {
+	body := []byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"internal reasoning"},"finish_reason":"length"}]}`)
+	_, err := NormalizeResponse(body)
+	var ie *IncompleteResponseError
+	if !errors.As(err, &ie) {
+		t.Fatalf("仅含 reasoning_content 且因长度截断的响应应返回 *IncompleteResponseError，得到 %v", err)
+	}
+}
+
+func TestNormalizeResponseAllowsEmptyVisibleContentWithoutReasoning(t *testing.T) {
+	body := []byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"length"}]}`)
+	if _, err := NormalizeResponse(body); err != nil {
+		t.Fatalf("没有 reasoning_content 的空响应应保持 OpenAI 兼容透传，得到 %v", err)
+	}
+}
+
+func TestNormalizeResponseKeepsVisibleContentAndDropsReasoningExtension(t *testing.T) {
+	body := []byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"OK","reasoning_content":"internal reasoning"},"finish_reason":"stop"}]}`)
+	c, err := NormalizeResponse(body)
+	if err != nil {
+		t.Fatalf("含可见正文的响应不应失败: %v", err)
+	}
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("编码响应失败: %v", err)
+	}
+	if strings.Contains(string(encoded), "reasoning_content") || strings.Contains(string(encoded), "internal reasoning") {
+		t.Fatalf("归一化响应不得泄露 reasoning_content，得到 %s", encoded)
+	}
+}
+
+func TestNormalizeResponseAllowsToolCallWithReasoning(t *testing.T) {
+	body := []byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"internal reasoning","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	if _, err := NormalizeResponse(body); err != nil {
+		t.Fatalf("含标准 tool_calls 的响应不应被 reasoning_content 误判: %v", err)
+	}
+}
+
+func TestNormalizeResponseAllowsVisibleSiblingChoice(t *testing.T) {
+	body := []byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"internal"},"finish_reason":"length"},{"index":1,"message":{"role":"assistant","content":"visible"},"finish_reason":"stop"}]}`)
+	if _, err := NormalizeResponse(body); err != nil {
+		t.Fatalf("存在可见 sibling choice 时不应把整个响应判为 incomplete: %v", err)
 	}
 }
 
