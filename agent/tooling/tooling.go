@@ -261,6 +261,10 @@ func validArguments(raw json.RawMessage) bool {
 // wrapInjected 解析注入输出并包装为标准 tool_calls（R10）：
 // 解析降级链提取 JSON → 校验（name ∈ 工具集、arguments 按声明 schema 用 U4 校验）→
 // 生成 id（call_ 前缀 + 随机 hex）、type:"function"、function.arguments 重序列化为 JSON 字符串。
+//
+// 模型选择不调用工具（输出普通文本，内容不含任何 "{"）时按普通 assistant 消息
+// 返回（业界共识 B5 / 工具循环最终答案轮）：不视为解析失败，不进校验重试。
+// 内容含 "{" 但无法解析为完整 JSON 对象 → KindParse（畸形输出，走 R15 重试）。
 func (s *Strategies) wrapInjected(cc *backend.ChatCompletion, tools []Tool) (*backend.ChatCompletion, error) {
 	if len(cc.Choices) == 0 {
 		return nil, &Error{Kind: KindParse, Message: "响应中没有 choices，无法解析模型输出"}
@@ -271,6 +275,10 @@ func (s *Strategies) wrapInjected(cc *backend.ChatCompletion, tools []Tool) (*ba
 	}
 	raw, err := ParseToolCallJSON(content)
 	if err != nil {
+		if !strings.Contains(content, "{") {
+			// 普通文本：模型选择不调用工具，原样返回（B5）。
+			return cc, nil
+		}
 		return nil, &Error{Kind: KindParse, Message: err.Error()}
 	}
 	var obj struct {

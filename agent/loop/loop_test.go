@@ -568,7 +568,7 @@ func TestRunMixedRegisteredUnregistered(t *testing.T) {
 // 第一次返回非法输出，第二次返回合法输出（R15）。
 func TestRunValidationRetrySucceeds(t *testing.T) {
 	rb := newSequenceBackend(t, []cannedResponse{
-		{code: 200, body: completionBody("抱歉，我无法完成该任务。")},
+		{code: 200, body: completionBody(`{"name": "map_column", "arguments": {broken`)},
 		{code: 200, body: completionBody(`{"name": "map_column", "arguments": {"column": "客户名", "standard_field": "customer_name"}}`)},
 	})
 	m := testModel(t, rb.srv.URL, registry.ToolCallingNone)
@@ -597,8 +597,10 @@ func TestRunValidationRetrySucceeds(t *testing.T) {
 // TestRunValidationExhausted：校验连续失败 3 次（含首次）→ 稳定错误（R15/KTD6：
 // 不泄漏模型原始输出与堆栈）。
 func TestRunValidationExhausted(t *testing.T) {
+	// 畸形 JSON 输出（含 { 但无法解析）连续失败 → 校验重试耗尽（R15）。
+	// 注：纯文本输出在新语义下视为"模型选择不调用工具"，属合法响应（B5）。
 	rb := newSequenceBackend(t, []cannedResponse{
-		{code: 200, body: completionBody("抱歉，我无法完成该任务。")},
+		{code: 200, body: completionBody(`{"name": "map_column", "arguments": {broken`)},
 	})
 	m := testModel(t, rb.srv.URL, registry.ToolCallingNone)
 	r := NewRunner(nil)
@@ -627,7 +629,7 @@ func TestRunValidationExhausted(t *testing.T) {
 // TestRunUpstreamLimit：单请求上游调用总次数超限 → 稳定错误（F3）。
 func TestRunUpstreamLimit(t *testing.T) {
 	rb := newSequenceBackend(t, []cannedResponse{
-		{code: 200, body: completionBody("抱歉，我无法完成该任务。")},
+		{code: 200, body: completionBody(`{"name": "map_column", "arguments": {broken`)},
 	})
 	m := testModel(t, rb.srv.URL, registry.ToolCallingNone)
 	r := NewRunner(nil, WithMaxUpstreamCalls(2))
@@ -737,7 +739,7 @@ func TestRunAuditRecords(t *testing.T) {
 // TestRunAuditErrorRecord：调用失败时审计记录携带错误字段（稳定错误文本）。
 func TestRunAuditErrorRecord(t *testing.T) {
 	rb := newSequenceBackend(t, []cannedResponse{
-		{code: 200, body: completionBody("抱歉，我无法完成该任务。")},
+		{code: 200, body: completionBody(`{"name": "map_column", "arguments": {broken`)},
 	})
 	m := testModel(t, rb.srv.URL, registry.ToolCallingNone)
 	sink := &recordSink{}

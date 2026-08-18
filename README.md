@@ -7,16 +7,17 @@ qfy-agent 是一个 Go 多模块项目。仓库根目录通过 `go.work` 组织�
 | 目录 | Go module | 职责 |
 |---|---|---|
 | [`agent/`](agent/) | `github.com/qfy-agent/qfy-agent` | OpenAI 兼容的轻量级 AI Agent 网关库与示例服务 |
+| [`web-demo/`](web-demo/) | `github.com/qfy-agent/qfy-agent/web-demo` | 消费方接入演示服务（前后端分离：Go 渲染静态页面 + htmx/alpine.js，默认端口 8077） |
 
 ## 开发
 
 在仓库根目录执行：
 
 ```bash
-go build ./agent/...
-go vet ./agent/...
-go test ./agent/...
-go test -race ./agent/...
+go build ./agent/... ./web-demo/...
+go vet ./agent/... ./web-demo/...
+go test ./agent/... ./web-demo/...
+go test -race ./agent/... ./web-demo/...
 ```
 
 新增 Go 模块时：
@@ -34,4 +35,14 @@ go run ./agent/cmd/qfy-agent-server \
   -addr 127.0.0.1:8080
 ```
 
-模块的架构、配置和 API 使用方式见 [`agent/README.md`](agent/README.md)。
+启动消费方接入演示台（web-demo，端口 8077）：
+
+```bash
+go run ./web-demo \
+  -config agent/config/models.example.yaml \
+  -addr 127.0.0.1:8077
+```
+
+浏览器打开 `http://127.0.0.1:8077`：模型列表、对话（SSE 流式）、工具调用演示（map_column 自动执行）与审计留痕面板。
+
+模块的架构、配置和 API 使用方式见 [`agent/README.md`](agent/README.md) 与 [`web-demo/README.md`](web-demo/README.md)。

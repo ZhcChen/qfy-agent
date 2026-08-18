@@ -354,12 +354,35 @@ func TestCallNoneParsesProse(t *testing.T) {
 
 // ---- none 策略：错误 ----
 
-// TestCallNoneUnparseableError：模型输出非法 JSON 且无法提取 → 明确错误（KindParse）。
+// TestCallNonePlainTextResponse：模型输出普通文本（选择不调用工具）→ 按普通
+// assistant 消息原样返回（B5 / 工具循环最终答案轮），不视为解析失败。
+func TestCallNonePlainTextResponse(t *testing.T) {
+	cases := []string{
+		"抱歉，我无法完成该任务。", // 纯散文，无 JSON
+		"",                       // 空内容
+	}
+	for _, content := range cases {
+		rb := newSequenceBackend(t, []cannedResponse{{code: 200, body: completionBody(content)}})
+		m := testModel(t, rb.srv.URL, registry.ToolCallingNone)
+		s := NewStrategies(backend.NewClient())
+
+		resp, err := s.Call(context.Background(), m, baseParams(), testTools)
+		if err != nil {
+			t.Errorf("输出 %q 应原样返回（模型选择不调用工具），得到错误: %v", content, err)
+			continue
+		}
+		if len(resp.Choices[0].Message.ToolCalls) != 0 {
+			t.Errorf("输出 %q 不应产生 tool_calls，得到 %+v", content, resp.Choices[0].Message.ToolCalls)
+		}
+	}
+}
+
+// TestCallNoneUnparseableError：模型输出含 "{" 但无法解析为完整 JSON 对象
+// → 明确错误（KindParse，畸形输出走 R15 重试）。
 func TestCallNoneUnparseableError(t *testing.T) {
 	cases := []string{
-		"抱歉，我无法完成该任务。",           // 纯散文，无 JSON
 		`{"name": "map_column", "arguments": {broken`, // 非法 JSON 且括号无法配对
-		"", // 空内容
+		`{"name": }`, // 结构非法
 	}
 	for _, content := range cases {
 		rb := newSequenceBackend(t, []cannedResponse{{code: 200, body: completionBody(content)}})

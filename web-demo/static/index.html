@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qfy-agent · 接入演示台</title>
+<link rel="stylesheet" href="/static/style.css">
+<script defer src="/static/vendor/htmx.min.js"></script>
+<script defer src="/static/vendor/alpine.min.js"></script>
+<script defer src="/static/app.js"></script>
+</head>
+<body x-data="demoApp()" x-init="init()" class="dark">
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">▣</span>
+    <div>
+      <h1>qfy-agent 接入演示台</h1>
+      <p class="sub">模拟财务系统接入 · OpenAI 兼容网关 · 本地模型（LM Studio）</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <label class="field inline">
+      <span>模型</span>
+      <select x-model="model" @change="loadAudit()">
+        <template x-for="m in models" :key="m.id">
+          <option :value="m.id" x-text="m.id + ' (' + m.tool_calling + ')'"></option>
+        </template>
+      </select>
+    </label>
+    <label class="switch">
+      <input type="checkbox" x-model="useTool">
+      <span>工具演示（map_column）</span>
+    </label>
+    <a class="btn ghost" href="/v1/models" target="_blank">OpenAI 端点</a>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- 左栏：对话 -->
+  <section class="panel chat-panel">
+    <div class="panel-head">
+      <h2>对话</h2>
+      <span class="hint" x-show="useTool">网关内循环：模型调用 → 工具执行 → 回填 → 最终答案（轮数上限 3）</span>
+    </div>
+    <div class="chat-log" id="chat-log" x-ref="chatLog">
+      <template x-for="(msg, i) in messages" :key="i">
+        <div class="msg" :class="'role-' + msg.role">
+          <div class="msg-label" x-text="msgLabel(msg.role)"></div>
+          <div class="msg-body">
+            <template x-if="msg.toolCalls && msg.toolCalls.length">
+              <div class="tool-call">
+                <template x-for="(tc, j) in msg.toolCalls" :key="j">
+                  <pre x-text="'工具调用: ' + tc.function.name + ' ' + tc.function.arguments"></pre>
+                </template>
+              </div>
+            </template>
+            <div x-text="msg.content" class="msg-content" :class="{streaming: msg.streaming}"></div>
+          </div>
+        </div>
+      </template>
+      <div class="msg role-system" x-show="busy">
+        <div class="msg-label">网关</div>
+        <div class="msg-body typing"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+    <form class="composer" @submit.prevent="send()">
+      <textarea x-model="draft" rows="2" placeholder="输入消息，例如：请把列「客户名称」映射到标准字段，调用工具"
+                @keydown.enter.exact.prevent="send()"></textarea>
+      <button class="btn primary" type="submit" :disabled="busy" x-text="busy ? '处理中…' : '发送'"></button>
+    </form>
+    <div class="suggestions">
+      <template x-for="s in suggestions" :key="s">
+        <button class="chip" type="button" @click="draft = s; send()" x-text="s"></button>
+      </template>
+    </div>
+  </section>
+
+  <!-- 右栏：模型 + 审计 -->
+  <aside class="side">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>模型能力</h2>
+        <button class="btn ghost sm" hx-get="/api/models" hx-trigger="click" hx-swap="innerHTML" hx-target="#model-list">刷新</button>
+      </div>
+      <div id="model-list" class="model-list" x-html="modelsHTML()"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>工具演示</h2>
+      </div>
+      <div class="tool-box">
+        <p class="hint">map_column：模拟"已确认映射"查询。模型（tool_calling: none）经网关注入策略产出标准 tool_calls，网关自动执行并回填，直到给出最终答案。</p>
+        <pre class="code">已确认映射表（模拟）:
+  客户名称 → customer_name
+  金额 → amount
+  数量 → quantity
+  日期 → order_date</pre>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>审计留痕</h2>
+        <button class="btn ghost sm" hx-get="/api/audit" hx-trigger="every 5s" hx-swap="innerHTML" hx-target="#audit-list">自动刷新(5s)</button>
+      </div>
+      <div id="audit-list" class="audit-list" x-html="auditHTML()"></div>
+    </section>
+  </aside>
+</main>
+
+</body>
+</html>
