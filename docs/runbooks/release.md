@@ -1,19 +1,16 @@
 # 版本发布 Runbook
 
-本仓库采用 Go 多模块结构，各模块独立使用 SemVer 版本。发布操作只在 `main` 分支进行。
+本仓库采用 Go 多模块结构，但唯一对外发布物是 `agent` 模块，使用 SemVer 版本。`web-demo` 仅用于本地接入演示与验收，不创建版本 tag。发布操作只在 `main` 分支进行。
 
 ## Tag 规则
 
-子目录中的 Go module 必须使用目录前缀 tag：
+`agent` 位于子目录中，必须使用目录前缀 tag：
 
 | 模块 | Module path | Tag 示例 |
 |---|---|---|
 | `agent/` | `github.com/qfy-agent/qfy-agent/agent` | `agent/v0.1.0` |
-| `web-demo/` | `github.com/qfy-agent/qfy-agent/web-demo` | `web-demo/v0.1.0` |
 
-只发布发生变化的模块。`web-demo` 依赖已发布的 `agent` 版本，因此同时发布时先发布 `agent`，再发布 `web-demo`。
-
-`web-demo/go.mod` 只保留已发布的 `agent` 版本依赖，不提交指向 `../agent` 的本地 `replace`；根目录 `go.work` 通过版本化 replace 供本地联调使用，发布模块时不会带入本地路径。
+`web-demo/go.mod` 保留对已发布 `agent` 版本的依赖，不提交指向 `../agent` 的本地 `replace`；根目录 `go.work` 通过版本化 replace 供本地联调使用。`web-demo` 的变更随仓库维护，但不单独发布。
 
 ## 发布前检查
 
@@ -64,13 +61,6 @@
 ```bash
 git tag -a agent/v0.1.0 -m 'agent v0.1.0'
 git push origin agent/v0.1.0
-```
-
-发布 `web-demo` 时，先确认其 `go.mod` 依赖的是已发布的 `agent` 版本，然后执行：
-
-```bash
-git tag -a web-demo/v0.1.0 -m 'web-demo v0.1.0'
-git push origin web-demo/v0.1.0
 ```
 
 推送后验证远端 tag 指向当前 `main` 提交：

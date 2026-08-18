@@ -47,4 +47,4 @@ go run ./web-demo \
 
 模块的架构、配置和 API 使用方式见 [`agent/README.md`](agent/README.md) 与 [`web-demo/README.md`](web-demo/README.md)。
 
-版本发布与多模块 tag 规则见 [`docs/runbooks/release.md`](docs/runbooks/release.md)。
+`agent` 模块的版本发布与 tag 规则见 [`docs/runbooks/release.md`](docs/runbooks/release.md)；`web-demo` 仅用于示例和验收，不单独发布版本。
