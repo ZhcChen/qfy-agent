@@ -47,6 +47,9 @@ type Model struct {
 	APIKey string `yaml:"api_key"`
 	// Model 后端实际使用的模型 id，可与对外 ID 不同。
 	Model string `yaml:"model"`
+	// ContextWindow 是约定的最大上下文 token 数；0 表示未知。
+	// 该值是注册表元数据，不会修改后端实际加载参数。
+	ContextWindow int `yaml:"context_window"`
 	// Capabilities 能力声明。
 	Capabilities Capabilities `yaml:"capabilities"`
 	// DefaultParams 参数抹平默认值（temperature、max_tokens 等任意键），

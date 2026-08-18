@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/loop"
-	"github.com/qfy-agent/qfy-agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/loop"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
 )
 
 // testRegistryYAML 以 mock 后端地址渲染注册表（单条模型，能力与示例配置一致）。
@@ -118,6 +118,18 @@ func chatBody(model, content string, useTool bool) string {
 	return fmt.Sprintf(`{"model":%q,"messages":%s,"use_tool":%v}`, model, msgs, useTool)
 }
 
+func TestBuildParamsDisablesThinking(t *testing.T) {
+	disabled := false
+	params := buildParams(&chatRequest{
+		Model:    "gemma-4-e4b",
+		Messages: []any{map[string]any{"role": "user", "content": "hi"}},
+		Thinking: &disabled,
+	})
+	if got := params["reasoning_effort"]; got != "none" {
+		t.Fatalf("关闭思考应转换为 reasoning_effort=none，得到 %v", got)
+	}
+}
+
 func TestIndexPage(t *testing.T) {
 	up := httptest.NewServer((&mockUpstream{}).handler())
 	defer up.Close()
@@ -130,8 +142,8 @@ func TestIndexPage(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.Contains(body, "qfy-agent 接入演示台") {
 		t.Errorf("首页应渲染演示台页面，得到 %d", resp.StatusCode)
 	}
-	if !strings.Contains(body, "htmx.min.js") || !strings.Contains(body, "alpine.min.js") {
-		t.Errorf("页面应引用本地 vendored 的 htmx/alpine")
+	if !strings.Contains(body, "app.js") || !strings.Contains(body, "alpine.min.js") {
+		t.Errorf("页面应引用本地 app.js 与 Alpine.js")
 	}
 }
 
@@ -312,5 +324,23 @@ func TestAuditAPI(t *testing.T) {
 	body := readBody(t, resp)
 	if !strings.Contains(body, "gemma-4-e4b") || !strings.Contains(body, "strategy") {
 		t.Errorf("/api/audit 应含对话留痕，得到 %s", body)
+	}
+}
+
+func TestDropStreamRemovesStreamOnlyParameters(t *testing.T) {
+	params := map[string]any{
+		"model":          "gemma-4-e4b",
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+	}
+	got := dropStream(params)
+	if _, ok := got["stream"]; ok {
+		t.Fatal("非流式上游请求不应保留 stream")
+	}
+	if _, ok := got["stream_options"]; ok {
+		t.Fatal("非流式上游请求不应保留 stream_options")
+	}
+	if got["model"] != "gemma-4-e4b" {
+		t.Fatalf("其他参数应保留，得到 %v", got)
 	}
 }

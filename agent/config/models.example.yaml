@@ -7,14 +7,17 @@
 # （收紧文件权限的配置文件或密钥管理），不得提交进源码库，任何日志与审计字段不得包含凭据。
 
 models:
-  # 本地主力模型：无原生工具调用，适配层走 prompt 注入策略
+  # 本地主力模型：原生工具调用实测可用，但稳定性尚未完全量化；
+  # 先原生调用，失败或结构非法时自动降级为 prompt 注入策略。
   - id: gemma-4-e4b
     backend: openai-compatible
     base_url: http://192.168.1.91:1234/v1
     api_key: ""
     model: google/gemma-4-e4b
+    # 暂按 128k 声明；LM Studio 实际加载容量需在服务端单独保持一致。
+    context_window: 131072
     capabilities:
-      tool_calling: none
+      tool_calling: partial
       # json_mode=false：LM Studio 实测不支持 response_format.type=json_object
       # （仅接受 json_schema|text，2026-08-18 联调确认）；网关对 json_object
       # 请求返回明确 400 json_mode_not_supported，消费方改用 prompt 约束输出 JSON。

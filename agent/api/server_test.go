@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/loop"
-	"github.com/qfy-agent/qfy-agent/registry"
-	"github.com/qfy-agent/qfy-agent/tooling"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/loop"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/tooling"
 )
 
 // ---- 测试基础设施 ----
@@ -1033,6 +1033,30 @@ func TestChatUpstreamErrorMapped502(t *testing.T) {
 	}
 }
 
+func TestChatReasoningOnlyResponseMapped502(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"private chain"},"finish_reason":"length"}]}`)
+	}))
+	defer upstream.Close()
+	srv, _ := newTestHandler(t, upstream.URL, nil)
+	defer srv.Close()
+
+	resp := postChat(t, srv.URL, map[string]any{
+		"model":    "gemma-4-e4b",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("reasoning-only 截断应映射 502，得到 %d", resp.StatusCode)
+	}
+	body := bodyString(t, resp)
+	if !strings.Contains(body, `"code":"upstream_incomplete_response"`) {
+		t.Errorf("错误码应稳定，得到 %s", body)
+	}
+	if strings.Contains(body, "private chain") || strings.Contains(body, "reasoning_content") {
+		t.Errorf("错误体不得泄露推理内容，得到 %s", body)
+	}
+}
+
 // TestChatMissingModelField：缺 model → 400 missing_model（评审 testing 补全）。
 func TestChatMissingModelField(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -1078,5 +1102,12 @@ func TestChatStreamFailureAudited(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("流式启动失败应触发审计（Stream=true、Error 非空），记录=%+v", rec.get())
+	}
+}
+
+func TestErrorTypeOfUpstreamError(t *testing.T) {
+	err := &backend.UpstreamError{StatusCode: http.StatusBadGateway}
+	if got := errorTypeOf(err); got != errTypeUpstream {
+		t.Fatalf("上游错误类型应为 %q，得到 %q", errTypeUpstream, got)
 	}
 }

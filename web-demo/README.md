@@ -10,7 +10,7 @@ qfy-agent 的**消费方接入演示服务**：模拟公司财务系统接入 Ag
 |---|---|---|
 | 模型选择/能力面板 | 注册表模型列表与能力声明（tool_calling/json_mode/streaming） | `registry` |
 | 对话 | 非流式 chat 与 SSE 流式（前端 `fetch + ReadableStream` 解析 chunk 增量） | `loop` / `api` |
-| 工具演示 | `map_column` 执行器注册：模型（`tool_calling: none`）经网关注入策略产出标准 tool_calls，网关自动执行并回填，直到给出最终答案 | `tooling` / `loop` 受控循环 |
+| 工具演示 | `map_column` 执行器注册：模型优先使用原生 tool_calls，结构异常时由网关降级处理，并自动执行与回填 | `tooling` / `loop` 受控循环 |
 | 审计面板 | OnCall 回调落库到内存存储，页面展示每次调用的模型/策略/耗时/状态 | `audit` |
 
 ## 启动

@@ -15,11 +15,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/api"
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/loop"
-	"github.com/qfy-agent/qfy-agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/api"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/loop"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
 )
 
 func main() {

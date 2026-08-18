@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
 )
 
 // 默认超时：非流式调用使用常规 RequestTimeout；流式读取路径独立放宽
@@ -79,6 +79,15 @@ func (e *MalformedError) Error() string {
 
 // Unwrap 暴露底层错误。
 func (e *MalformedError) Unwrap() error { return e.Err }
+
+// IncompleteResponseError 表示上游只产生了非标准推理内容，因长度上限结束，
+// 但没有生成任何对外可见的 content 或 tool_calls。推理原文不会写入错误，
+// 避免把模型内部推理泄漏给调用方或日志。
+type IncompleteResponseError struct{}
+
+func (e *IncompleteResponseError) Error() string {
+	return "上游模型输出长度已耗尽，但未生成可见内容"
+}
 
 // Option 配置 Client。
 type Option func(*Client)
@@ -145,7 +154,8 @@ func NewClient(opts ...Option) *Client {
 // Call 发起非流式 /chat/completions 调用并返回归一化响应。
 // params 为外部 OpenAI 格式请求参数（model 字段为注册表 ID，内部翻译为后端
 // model id 并合并 default_params 后发出，R2/R5）。错误均为本包可识别类型：
-// *UnavailableError（网络/超时）、*UpstreamError（非 2xx）、*MalformedError（响应畸形）。
+// *UnavailableError（网络/超时）、*UpstreamError（非 2xx）、*MalformedError（响应畸形）、
+// *IncompleteResponseError（仅有内部推理且因长度截断）。
 func (c *Client) Call(ctx context.Context, m *registry.Model, params map[string]any) (*ChatCompletion, error) {
 	resp, err := c.roundTrip(ctx, m, params, c.requestClient, false)
 	if err != nil {

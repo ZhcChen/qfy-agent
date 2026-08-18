@@ -17,10 +17,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/loop"
-	"github.com/qfy-agent/qfy-agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/loop"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
 )
 
 func main() {
@@ -55,12 +55,12 @@ func main() {
 		loop.WithOnCall(notifier.Notify))
 
 	s := &server{
-		reg:     reg,
-		client:  client,
-		runner:  runner,
-		tools:   tools,
-		audits:  audits,
-		notify:  notifier.Notify,
+		reg:    reg,
+		client: client,
+		runner: runner,
+		tools:  tools,
+		audits: audits,
+		notify: notifier.Notify,
 	}
 	srv := &http.Server{Addr: *addr, Handler: s.routes()}
 	log.Printf("web-demo 监听 %s（页面: GET / ；API: /api/models /api/chat /api/chat/stream /api/audit）", *addr)

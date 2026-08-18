@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/loop"
-	"github.com/qfy-agent/qfy-agent/registry"
-	"github.com/qfy-agent/qfy-agent/tooling"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/loop"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/tooling"
 )
 
 // maxRequestBody 请求体大小上限（1 MiB，防止畸形大请求占满内存）。
@@ -35,6 +35,7 @@ const (
 	errCodeValidationFailed = "validation_failed"
 	errCodeUpstreamLimit    = "upstream_call_limit"
 	errCodeToolingFailed    = "tooling_failed"
+	errCodeIncomplete       = "upstream_incomplete_response"
 )
 
 // handleChat POST /v1/chat/completions（R2/R3）：
@@ -175,7 +176,7 @@ func (h *handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		resp, err := h.cfg.Runner.Run(r.Context(), m, p)
 		if err != nil {
 			// 循环失败：以流内错误事件 + [DONE] 表达（评审修正：不裸断连接）。
-			_ = sse.WriteErrorEvent(stableErrorMessage(err), errTypeServer, "", errorCodeOf(err))
+			_ = sse.WriteErrorEvent(stableErrorMessage(err), errorTypeOf(err), "", errorCodeOf(err))
 			_ = sse.WriteDONE()
 			return
 		}
@@ -197,7 +198,7 @@ func (h *handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			p := dropStreamParams(params)
 			resp, err := h.cfg.Runner.Run(r.Context(), m, p)
 			if err != nil {
-				_ = sse.WriteErrorEvent(stableErrorMessage(err), errTypeServer, "", errorCodeOf(err))
+				_ = sse.WriteErrorEvent(stableErrorMessage(err), errorTypeOf(err), "", errorCodeOf(err))
 				_ = sse.WriteDONE()
 				return
 			}
@@ -264,12 +265,15 @@ func parseStreamFlag(v any) (bool, error) {
 // stableErrorMessage 从内部错误提取稳定错误文本（不泄漏原始堆栈，KTD8）。
 func stableErrorMessage(err error) string {
 	var ue *backend.UpstreamError
+	var ie *backend.IncompleteResponseError
 	var ve *loop.ValidationExhaustedError
 	var ul *loop.UpstreamLimitError
 	var te *tooling.Error
 	switch {
 	case errors.As(err, &ue):
 		return "上游服务错误"
+	case errors.As(err, &ie):
+		return "上游模型未生成可见内容，请提高 max_tokens 或调整模型推理设置后重试"
 	case errors.As(err, &ve):
 		return "模型输出校验失败，请调整请求后重试"
 	case errors.As(err, &ul):
@@ -284,12 +288,15 @@ func stableErrorMessage(err error) string {
 // errorCodeOf 返回内部错误的稳定错误码（供流内错误事件，KTD8）。
 func errorCodeOf(err error) string {
 	var ue *backend.UpstreamError
+	var ie *backend.IncompleteResponseError
 	var ve *loop.ValidationExhaustedError
 	var ul *loop.UpstreamLimitError
 	var te *tooling.Error
 	switch {
 	case errors.As(err, &ue):
 		return "upstream_error"
+	case errors.As(err, &ie):
+		return errCodeIncomplete
 	case errors.As(err, &ve):
 		return errCodeValidationFailed
 	case errors.As(err, &ul):
@@ -299,6 +306,15 @@ func errorCodeOf(err error) string {
 	default:
 		return errCodeInternal
 	}
+}
+
+func errorTypeOf(err error) string {
+	var ue *backend.UpstreamError
+	var ie *backend.IncompleteResponseError
+	if errors.As(err, &ue) || errors.As(err, &ie) {
+		return errTypeUpstream
+	}
+	return errTypeServer
 }
 
 // decodeChatBody 读取并解析请求体为 map[string]any（与 backend/tooling/loop
@@ -368,6 +384,15 @@ func (h *handler) writeRunError(w http.ResponseWriter, err error) {
 			eb.Code = "upstream_error"
 		}
 		writeError(w, http.StatusBadGateway, eb)
+		return
+	}
+	var ie *backend.IncompleteResponseError
+	if errors.As(err, &ie) {
+		writeError(w, http.StatusBadGateway, backend.ErrorBody{
+			Message: stableErrorMessage(err),
+			Type:    errTypeUpstream,
+			Code:    errorCodeOf(err),
+		})
 		return
 	}
 	var ve *loop.ValidationExhaustedError

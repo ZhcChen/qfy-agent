@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/registry"
-	"github.com/qfy-agent/qfy-agent/schema"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/schema"
 )
 
 // ---- 测试基础设施 ----
@@ -291,11 +291,11 @@ func TestCallNoneInjectsSystemMessage(t *testing.T) {
 	}
 	sys, _ := first["content"].(string)
 	for _, want := range []string{
-		"map_column",              // 工具名
+		"map_column",       // 工具名
 		"将 Excel 列映射到标准字段", // 工具描述
-		"参数 schema",             // 参数 schema 文本
-		"只输出单个 JSON 对象",     // JSON 输出约束
-		"不要使用 markdown",       // 约束
+		"参数 schema",        // 参数 schema 文本
+		"只输出单个 JSON 对象",    // JSON 输出约束
+		"不要使用 markdown",    // 约束
 	} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("注入 system 消息应包含 %q，得到：\n%s", want, sys)
@@ -359,7 +359,7 @@ func TestCallNoneParsesProse(t *testing.T) {
 func TestCallNonePlainTextResponse(t *testing.T) {
 	cases := []string{
 		"抱歉，我无法完成该任务。", // 纯散文，无 JSON
-		"",                       // 空内容
+		"",             // 空内容
 	}
 	for _, content := range cases {
 		rb := newSequenceBackend(t, []cannedResponse{{code: 200, body: completionBody(content)}})
@@ -417,10 +417,10 @@ func TestCallNoneUnknownToolNameError(t *testing.T) {
 // → 结构化校验错误（Details 携带 U4 错误）。
 func TestCallNoneArgumentsSchemaError(t *testing.T) {
 	cases := []struct {
-		name       string
-		content    string
-		wantKind   schema.ErrorKind
-		wantPath   string
+		name     string
+		content  string
+		wantKind schema.ErrorKind
+		wantPath string
 	}{
 		{
 			name:     "缺必填字段 standard_field",
@@ -530,7 +530,7 @@ func TestCallPartialDegradesOnInvalidToolCalls(t *testing.T) {
 	invalidBodies := []string{
 		toolCallsBody(fmt.Sprintf("%q", "this is not json")), // arguments 字符串内容非 JSON
 		`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"x","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"type":"function","function":{"name":"map_column","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{}}`, // 缺 id
-		`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"x","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{}}`, // 缺 name
+		`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"x","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{}}`,       // 缺 name
 	}
 	for i, bad := range invalidBodies {
 		t.Run(fmt.Sprintf("invalid_%d", i), func(t *testing.T) {
@@ -807,6 +807,27 @@ func TestCallPartialNoDegradeOnMalformed(t *testing.T) {
 	if rb.count() != 1 {
 		t.Errorf("畸形响应不应触发降级重试，调用次数=%d", rb.count())
 	}
+}
+
+func TestCallPartialDegradesOnReasoningOnlyResponse(t *testing.T) {
+	reasoningOnly := `{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"internal"},"finish_reason":"length"}]}`
+	injected := `{"name":"map_column","arguments":{"column":"客户名","standard_field":"customer_name"}}`
+	rb := newSequenceBackend(t, []cannedResponse{
+		{code: 200, body: reasoningOnly},
+		{code: 200, body: completionBody(injected)},
+	})
+	defer rb.srv.Close()
+	m := testModel(t, rb.srv.URL, registry.ToolCallingPartial)
+	s := NewStrategies(backend.NewClient())
+
+	resp, err := s.Call(context.Background(), m, baseParams(), testTools)
+	if err != nil {
+		t.Fatalf("reasoning-only 原生响应应降级注入成功: %v", err)
+	}
+	if rb.count() != 2 {
+		t.Fatalf("应执行一次原生调用和一次注入降级，得到 %d 次", rb.count())
+	}
+	assertWrappedToolCall(t, resp)
 }
 
 // TestCallToolChoiceNone：tool_choice="none" → 无工具直连（不注入、不调用工具）。

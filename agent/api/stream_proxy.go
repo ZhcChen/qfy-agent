@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
 )
 
 // DefaultSummaryRunes 流式输出摘要（content 与工具参数）保留的 rune 数上限
@@ -88,12 +88,34 @@ func ProxyStream(ctx context.Context, w http.ResponseWriter, upstream io.ReadClo
 		if data != "" {
 			if strings.TrimSpace(data) == "[DONE]" {
 				p.sawDONE = true
+				if p.sawReasoning && !p.sawVisible && p.sawLength {
+					incomplete := &backend.IncompleteResponseError{}
+					msg := stableErrorMessage(incomplete)
+					if err := sse.WriteErrorEvent(msg, errTypeUpstream, "", errCodeIncomplete); err != nil {
+						return p.emitAndReturn(false, errMsgWriteFailed, err)
+					}
+					if err := sse.WriteDONE(); err != nil {
+						return p.emitAndReturn(false, errMsgWriteFailed, err)
+					}
+					return p.emitAndReturn(false, msg, incomplete)
+				}
 				if err := sse.WriteDONE(); err != nil {
 					return p.emitAndReturn(false, errMsgWriteFailed, err)
 				}
 				continue
 			}
 			if err := p.forward(sse, data); err != nil {
+				var malformed *backend.MalformedError
+				if errors.As(err, &malformed) {
+					msg := "上游流包含畸形响应"
+					if writeErr := sse.WriteErrorEvent(msg, errTypeUpstream, "", "upstream_malformed_response"); writeErr != nil {
+						return p.emitAndReturn(false, errMsgWriteFailed, writeErr)
+					}
+					if writeErr := sse.WriteDONE(); writeErr != nil {
+						return p.emitAndReturn(false, errMsgWriteFailed, writeErr)
+					}
+					return p.emitAndReturn(false, msg, err)
+				}
 				return p.emitAndReturn(false, errMsgWriteFailed, err)
 			}
 		}
@@ -122,6 +144,11 @@ type streamProxy struct {
 	content runePrefix
 	calls   map[int]*streamCallAccum
 	sawDONE bool
+	// reasoningOnlyLength 在流中发现 reasoning_content，且尚无可见内容/工具调用，
+	// 并以 length 结束。推理内容本身始终不透传。
+	sawReasoning bool
+	sawVisible   bool
+	sawLength    bool
 }
 
 // streamCallAccum 单次工具调用的摘要累积（按 index 组织）。
@@ -131,12 +158,13 @@ type streamCallAccum struct {
 }
 
 // forward 读改写单个 chunk 事件：解析 data 的 chunk JSON → 白名单化（KTD8）→
-// 重序列化写出，边转发边累积输出摘要。JSON 解析失败的畸形行原样转发（防御性），不中断流。
+// 重序列化写出，边转发边累积输出摘要。畸形 JSON 返回明确错误并终止流。
 func (p *streamProxy) forward(sse *SSEWriter, data string) error {
 	var c streamChunk
 	if err := json.Unmarshal([]byte(data), &c); err != nil {
-		return sse.WriteEvent([]byte(data))
+		return &backend.MalformedError{Phase: "decode stream chunk", Err: err}
 	}
+	p.observeExtensions(c)
 	rewriteChunk(&c, p.opts.Model)
 	p.accumulate(c)
 	b, err := json.Marshal(&c)
@@ -144,6 +172,34 @@ func (p *streamProxy) forward(sse *SSEWriter, data string) error {
 		return err
 	}
 	return sse.WriteEvent(b)
+}
+
+func (p *streamProxy) observeExtensions(c streamChunk) {
+	for _, ch := range c.Choices {
+		if ch.Delta.Content != nil && strings.TrimSpace(*ch.Delta.Content) != "" {
+			p.sawVisible = true
+		}
+		if len(ch.Delta.ToolCalls) > 0 {
+			p.sawVisible = true
+		}
+		if hasReasoningDelta(ch.Delta.ReasoningContent) {
+			p.sawReasoning = true
+		}
+		if ch.FinishReason != nil {
+			p.sawLength = p.sawLength || backend.NormalizeFinishReason(*ch.FinishReason) == "length"
+		}
+	}
+}
+
+func hasReasoningDelta(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text) != ""
+	}
+	return true
 }
 
 // accumulate 从白名单化后的 chunk 累积输出摘要：content 与各工具调用的 arguments
@@ -281,6 +337,9 @@ type streamDelta struct {
 	Content   *string          `json:"content,omitempty"`
 	ToolCalls []streamToolCall `json:"tool_calls,omitempty"`
 	Refusal   *string          `json:"refusal,omitempty"`
+	// ReasoningContent 仅用于识别 LM Studio reasoning-only 截断，rewriteChunk
+	// 会在输出前清空，禁止向 OpenAI-compatible 下游泄漏。
+	ReasoningContent json.RawMessage `json:"reasoning_content,omitempty"`
 }
 
 type streamToolCall struct {
@@ -307,6 +366,7 @@ func rewriteChunk(c *streamChunk, modelID string) {
 		c.Model = modelID
 	}
 	for i := range c.Choices {
+		c.Choices[i].Delta.ReasoningContent = nil
 		if c.Choices[i].FinishReason != nil {
 			fr := backend.NormalizeFinishReason(*c.Choices[i].FinishReason)
 			c.Choices[i].FinishReason = &fr

@@ -18,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/internal/anyutil"
-	"github.com/qfy-agent/qfy-agent/registry"
-	"github.com/qfy-agent/qfy-agent/schema"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/internal/anyutil"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/schema"
 )
 
 // Tool 是消费方请求 tools 的标准 OpenAI 形态（工具定义输入，供注入模板与校验使用）。
@@ -176,8 +176,9 @@ func applyToolChoice(raw any, tools []Tool) ([]Tool, error) {
 }
 
 // callPartial 首轮原生透传（R8）；按 KTD5 触发降级条件时本轮以注入策略重试一次。
-// 降级条件：后端调用失败（*backend.UnavailableError / *backend.UpstreamError，errors.As 识别）
-// 或响应中 tool_calls 结构无法解析（缺 id/name/arguments 或 arguments 非 JSON）。
+// 降级条件：后端调用失败（*backend.UnavailableError / *backend.UpstreamError，errors.As 识别）、
+// 仅有内部推理且因长度截断（*backend.IncompleteResponseError），或响应中 tool_calls
+// 结构无法解析（缺 id/name/arguments 或 arguments 非 JSON）。
 // 模型合理选择不调用工具（响应无 tool_calls）不算失败，不触发降级。
 func (s *Strategies) callPartial(ctx context.Context, m *registry.Model, params map[string]any, tools []Tool) (*backend.ChatCompletion, error) {
 	resp, err := s.client.Call(ctx, m, params)
@@ -194,10 +195,14 @@ func (s *Strategies) callPartial(ctx context.Context, m *registry.Model, params 
 }
 
 // isDegradable 判定后端错误是否可触发 partial 降级（KTD5）：UpstreamError
-// （HTTP 非 2xx）可降级；UnavailableError 中的超时**不**降级（评审修正：超时
-// 后端大概率继续超时，降级只会让单轮延迟翻倍、燃烧预算）；一般网络错误与
-// MalformedError（响应畸形）原样上抛。
+// （HTTP 非 2xx）和 IncompleteResponseError 可降级；UnavailableError 中的超时
+// **不**降级（超时后端大概率继续超时，降级只会让单轮延迟翻倍、燃烧预算）；
+// 一般网络错误与 MalformedError（响应畸形）原样上抛。
 func isDegradable(err error) bool {
+	var incomplete *backend.IncompleteResponseError
+	if errors.As(err, &incomplete) {
+		return true
+	}
 	var ue *backend.UnavailableError
 	if errors.As(err, &ue) {
 		return !ue.Timeout
@@ -403,4 +408,3 @@ func ParseTools(raw any) ([]Tool, error) {
 	}
 	return out, nil
 }
-
