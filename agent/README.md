@@ -2,7 +2,7 @@
 
 轻量级 AI Agent 网关库（Go）。对外暴露 **OpenAI 兼容规范**的 HTTP API，对内通过"模型能力声明 + 适配层"抹平本地模型的能力差异——包括工具调用能力薄弱的模型。
 
-本模块位于多模块仓库的 `agent/` 目录，Go module 路径保持为 `github.com/qfy-agent/qfy-agent`。本文件中的仓库路径和命令均以仓库根目录为基准。
+本模块位于多模块仓库的 `agent/` 目录，Go module 路径为 `github.com/qfy-agent/qfy-agent/agent`。本文件中的仓库路径和命令均以仓库根目录为基准。
 
 设计背景：公司财务系统需为"非标准 Excel 列语义识别"接入本地大模型（LM Studio，`http://192.168.1.91:1234/v1`，主力模型 google/gemma-4-e4b）。该模型原生 function calling 能力薄弱，直接对接会使业务代码适配不同模型差异；引入重型 agent 框架又与"轻量、可控、可审计"诉求冲突。qfy-agent 作为薄网关：**任何 OpenAI SDK 可直接接入，消费方无感知后端真实能力**。
 
@@ -78,8 +78,9 @@ models:
     base_url: http://192.168.1.91:1234/v1
     api_key: ""                     # 占位；真实 key 经受保护来源注入，勿提交源码库
     model: google/gemma-4-e4b       # 后端实际模型 id（可与对外 ID 不同）
+    context_window: 131072          # 注册表声明，不会修改 LM Studio 加载参数
     capabilities:
-      tool_calling: none            # full | partial | none
+      tool_calling: partial         # full | partial | none
       json_mode: false              # 后端是否原生支持 response_format.json_object
       streaming: true               # 后端是否支持真实 SSE 流式
     default_params:                 # 参数抹平：外部未显式指定时填充
@@ -90,6 +91,8 @@ models:
 能力字段的行为契约：`streaming: false` 时 `stream=true` 请求走非流式调用 + 缓冲模拟流（不静默透传）；`json_mode: false` 时 `response_format.json_object` 请求返回明确的 `400 json_mode_not_supported`（消费方改用 prompt 约束输出 JSON）。示例配置中两条模型均为 `json_mode: false`——LM Studio 实测不支持 `response_format.type=json_object`（仅接受 `json_schema|text`，2026-08-18 联调确认），能力按后端真实情况如实声明。
 
 LM Studio 等后端可能返回非标准 `reasoning_content`。网关不会把内部推理映射到 `content` 或向下游透传；当响应只有推理内容、没有可见正文或工具调用，并以 `finish_reason=length` 结束时，网关返回 `502 upstream_incomplete_response`，提示调用方提高 `max_tokens` 或调整模型推理设置。真实 SSE 使用同一错误码在 `[DONE]` 前发送 error 事件。
+
+`context_window` 是网关侧登记的模型上下文上限元数据。LM Studio 的 OpenAI-compatible API 不提供当前实际加载容量，因此该值不会自动校准或改变 LM Studio 设置；两侧需由部署者保持一致。当前网关也不基于该字段自动裁剪消息。
 
 库本身**不读取环境变量、不触碰文件系统**（R18）：消费方读取配置文件后调用 `registry.Load` 注入。新增模型只改配置不改代码。
 

@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/internal/anyutil"
-	"github.com/qfy-agent/qfy-agent/registry"
-	"github.com/qfy-agent/qfy-agent/schema"
-	"github.com/qfy-agent/qfy-agent/tooling"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/internal/anyutil"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/schema"
+	"github.com/qfy-agent/qfy-agent/agent/tooling"
 )
 
 // ValidationExhaustedError 校验重试耗尽后的稳定错误（R15/KTD6）：

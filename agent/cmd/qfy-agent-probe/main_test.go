@@ -24,7 +24,7 @@ func TestRunReportsCapabilities(t *testing.T) {
 			switch {
 			case strings.Contains(raw, `"response_format"`):
 				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, `{"error":{"message":"unsupported"}}`)
+				fmt.Fprint(w, `{"error":{"message":"response_format json_object is unsupported"}}`)
 			case strings.Contains(raw, `"tools"`):
 				fmt.Fprint(w, `{"choices":[{"message":{"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"probe_weather","arguments":"{\"city\":\"上海\"}"}}]},"finish_reason":"tool_calls"}]}`)
 			default:
@@ -78,6 +78,28 @@ func TestProbeSSERejectsEmptyCompletedStream(t *testing.T) {
 	}
 }
 
+func TestProbeSSERejectsChunksWithoutVisibleContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	c := probeSSE(context.Background(), config{BaseURL: srv.URL, Model: "model-a", HTTPClient: srv.Client()})
+	if c.Status != "inconclusive" || c.HasContent {
+		t.Fatalf("无可见正文的 SSE 不应通过: %+v", c)
+	}
+}
+
+func TestProbeSSERejectsMalformedChunk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "data: {bad json}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	c := probeSSE(context.Background(), config{BaseURL: srv.URL, Model: "model-a", HTTPClient: srv.Client()})
+	if c.Status != "error" {
+		t.Fatalf("畸形 SSE chunk 应报告错误: %+v", c)
+	}
+}
+
 func TestProbeChatRejectsEmptyContent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`)
@@ -114,6 +136,31 @@ func TestProbeJSONObjectValidatesContentAndHTTPStatus(t *testing.T) {
 				t.Fatalf("状态应为 %s: %+v", tc.want, c)
 			}
 		})
+	}
+}
+
+func TestProbeJSONObjectDoesNotTreatUnrelatedBadRequestAsUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"invalid model"}}`)
+	}))
+	defer srv.Close()
+	c := probeJSONObject(context.Background(), config{BaseURL: srv.URL, Model: "model-a", HTTPClient: srv.Client()})
+	if c.Status != "error" {
+		t.Fatalf("无关的 400 不应归类为不支持 json_object: %+v", c)
+	}
+}
+
+func TestRunSkipsCapabilityRequestsWhenModelDiscoveryFails(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	r := run(context.Background(), config{BaseURL: srv.URL, Model: "model-a", HTTPClient: srv.Client()})
+	if requests != 1 || r.Chat.Status != "inconclusive" || r.SSE.Status != "inconclusive" {
+		t.Fatalf("模型发现失败后应跳过其余探测: requests=%d report=%+v", requests, r)
 	}
 }
 

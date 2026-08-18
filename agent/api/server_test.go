@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/loop"
-	"github.com/qfy-agent/qfy-agent/registry"
-	"github.com/qfy-agent/qfy-agent/tooling"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/loop"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/tooling"
 )
 
 // ---- 测试基础设施 ----
@@ -1102,5 +1102,12 @@ func TestChatStreamFailureAudited(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("流式启动失败应触发审计（Stream=true、Error 非空），记录=%+v", rec.get())
+	}
+}
+
+func TestErrorTypeOfUpstreamError(t *testing.T) {
+	err := &backend.UpstreamError{StatusCode: http.StatusBadGateway}
+	if got := errorTypeOf(err); got != errTypeUpstream {
+		t.Fatalf("上游错误类型应为 %q，得到 %q", errTypeUpstream, got)
 	}
 }

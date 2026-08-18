@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
 )
 
 // DefaultSummaryRunes 流式输出摘要（content 与工具参数）保留的 rune 数上限
@@ -158,7 +158,7 @@ type streamCallAccum struct {
 }
 
 // forward 读改写单个 chunk 事件：解析 data 的 chunk JSON → 白名单化（KTD8）→
-// 重序列化写出，边转发边累积输出摘要。JSON 解析失败的畸形行原样转发（防御性），不中断流。
+// 重序列化写出，边转发边累积输出摘要。畸形 JSON 返回明确错误并终止流。
 func (p *streamProxy) forward(sse *SSEWriter, data string) error {
 	var c streamChunk
 	if err := json.Unmarshal([]byte(data), &c); err != nil {
@@ -176,7 +176,7 @@ func (p *streamProxy) forward(sse *SSEWriter, data string) error {
 
 func (p *streamProxy) observeExtensions(c streamChunk) {
 	for _, ch := range c.Choices {
-		if ch.Delta.Content != nil && *ch.Delta.Content != "" {
+		if ch.Delta.Content != nil && strings.TrimSpace(*ch.Delta.Content) != "" {
 			p.sawVisible = true
 		}
 		if len(ch.Delta.ToolCalls) > 0 {

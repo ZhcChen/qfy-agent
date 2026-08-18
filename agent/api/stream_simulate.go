@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
 )
 
 // DefaultChunkSize 模拟流每块 content/arguments 的字符（rune）数（R12）。

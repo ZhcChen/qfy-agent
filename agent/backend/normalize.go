@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
 )
 
 // NormalizeRequest 参数抹平 + model 翻译（R5）：
@@ -147,7 +147,7 @@ func hasVisibleContent(raw json.RawMessage) bool {
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
-		return text != ""
+		return strings.TrimSpace(text) != ""
 	}
 	return true
 }

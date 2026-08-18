@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/qfy-agent/qfy-agent/internal/anyutil"
+	"github.com/qfy-agent/qfy-agent/agent/internal/anyutil"
 )
 
 // Example 一个 few-shot 示例对（KTD4）：用户请求与模型应输出的工具调用 JSON。

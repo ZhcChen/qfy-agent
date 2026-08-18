@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qfy-agent/qfy-agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
 )
 
 // normTestModel 构造仅用于归一化测试的注册表模型（无网络）。
@@ -181,6 +181,15 @@ func TestNormalizeResponseRejectsReasoningOnlyLengthResponse(t *testing.T) {
 	var ie *IncompleteResponseError
 	if !errors.As(err, &ie) {
 		t.Fatalf("仅含 reasoning_content 且因长度截断的响应应返回 *IncompleteResponseError，得到 %v", err)
+	}
+}
+
+func TestNormalizeResponseRejectsWhitespaceContentWithReasoningOnlyLength(t *testing.T) {
+	body := []byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"  \n","reasoning_content":"internal reasoning"},"finish_reason":"length"}]}`)
+	_, err := NormalizeResponse(body)
+	var ie *IncompleteResponseError
+	if !errors.As(err, &ie) {
+		t.Fatalf("空白正文不应被视为可见输出，得到 %v", err)
 	}
 }
 

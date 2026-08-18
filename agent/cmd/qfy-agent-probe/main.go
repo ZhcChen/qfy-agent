@@ -101,6 +101,11 @@ func run(ctx context.Context, cfg config) report {
 	}
 	r := report{BaseURL: cfg.BaseURL, Model: cfg.Model}
 	r.Models = probeModels(ctx, cfg)
+	if r.Models.Status != "pass" || !r.Models.TargetListed {
+		skipped := check{Status: "inconclusive", Message: "skipped because model discovery did not pass"}
+		r.Chat, r.JSONObject, r.Tools, r.SSE = skipped, skipped, skipped, skipped
+		return r
+	}
 	r.Chat = probeChat(ctx, cfg)
 	r.JSONObject = probeJSONObject(ctx, cfg)
 	r.Tools = probeTools(ctx, cfg)
@@ -177,7 +182,7 @@ func probeJSONObject(ctx context.Context, cfg config) check {
 		c.Status, c.Message = "error", err.Error()
 		return c
 	}
-	if status == http.StatusBadRequest || status == http.StatusUnprocessableEntity {
+	if (status == http.StatusBadRequest || status == http.StatusUnprocessableEntity) && isJSONObjectUnsupported(body) {
 		c.Status, c.Message = "unsupported", "backend rejected response_format.json_object"
 		return c
 	}
@@ -262,15 +267,17 @@ func probeSSE(ctx context.Context, cfg config) check {
 				} `json:"delta"`
 			} `json:"choices"`
 		}
-		if json.Unmarshal([]byte(data), &chunk) == nil && len(chunk.Choices) > 0 {
-			c.EventCount++
-			for _, choice := range chunk.Choices {
-				if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-					c.HasContent = true
-				}
-				if hasText(choice.Delta.ReasoningContent) {
-					c.HasReasoningContent = true
-				}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil || len(chunk.Choices) == 0 {
+			c.Status, c.Message = "error", "SSE returned a malformed completion chunk"
+			return c
+		}
+		c.EventCount++
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != nil && strings.TrimSpace(*choice.Delta.Content) != "" {
+				c.HasContent = true
+			}
+			if hasText(choice.Delta.ReasoningContent) {
+				c.HasReasoningContent = true
 			}
 		}
 	}
@@ -290,8 +297,17 @@ func probeSSE(ctx context.Context, cfg config) check {
 		c.Status, c.Message = "inconclusive", "SSE returned reasoning_content without visible content"
 		return c
 	}
+	if !c.HasContent {
+		c.Status, c.Message = "inconclusive", "SSE returned no visible content"
+		return c
+	}
 	c.Status = "pass"
 	return c
+}
+
+func isJSONObjectUnsupported(body []byte) bool {
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "response_format") || strings.Contains(text, "json_object")
 }
 
 func baseCompletionPayload(cfg config, prompt string) map[string]any {

@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/qfy-agent/qfy-agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
 )
 
 // ownedBy /v1/models 列表项的固定归属标识（R1）。

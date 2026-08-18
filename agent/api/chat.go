@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/loop"
-	"github.com/qfy-agent/qfy-agent/registry"
-	"github.com/qfy-agent/qfy-agent/tooling"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/loop"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/tooling"
 )
 
 // maxRequestBody 请求体大小上限（1 MiB，防止畸形大请求占满内存）。
@@ -309,8 +309,9 @@ func errorCodeOf(err error) string {
 }
 
 func errorTypeOf(err error) string {
+	var ue *backend.UpstreamError
 	var ie *backend.IncompleteResponseError
-	if errors.As(err, &ie) {
+	if errors.As(err, &ue) || errors.As(err, &ie) {
 		return errTypeUpstream
 	}
 	return errTypeServer

@@ -4,12 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>qfy-agent · 接入演示台</title>
-<link rel="stylesheet" href="/static/style.css">
-<script defer src="/static/vendor/htmx.min.js"></script>
+<link rel="stylesheet" href="/static/style.css?v=20260818-2">
+<script defer src="/static/app.js?v=20260818-2"></script>
 <script defer src="/static/vendor/alpine.min.js"></script>
-<script defer src="/static/app.js"></script>
 </head>
-<body x-data="demoApp()" x-init="init()" class="dark">
+<body x-data="demoApp()" x-init="init()">
 
 <header class="topbar">
   <div class="brand">
@@ -22,7 +21,7 @@
   <div class="top-actions">
     <label class="field inline">
       <span>模型</span>
-      <select x-model="model" @change="loadAudit()">
+      <select x-model="model" @change="loadAudit()" :disabled="busy || !models.length" aria-label="模型">
         <template x-for="m in models" :key="m.id">
           <option :value="m.id" x-text="m.id + ' (' + m.tool_calling + ')'"></option>
         </template>
@@ -31,6 +30,10 @@
     <label class="switch">
       <input type="checkbox" x-model="useTool">
       <span>工具演示（map_column）</span>
+    </label>
+    <label class="switch">
+      <input type="checkbox" x-model="thinking">
+      <span>思考</span>
     </label>
     <a class="btn ghost" href="/v1/models" target="_blank">OpenAI 端点</a>
   </div>
@@ -41,12 +44,22 @@
   <section class="panel chat-panel">
     <div class="panel-head">
       <h2>对话</h2>
-      <span class="hint" x-show="useTool">网关内循环：模型调用 → 工具执行 → 回填 → 最终答案（轮数上限 3）</span>
+      <div class="chat-controls">
+        <span class="hint" x-show="useTool">工具循环完成后模拟 SSE 输出</span>
+        <div class="segmented" aria-label="响应方式">
+          <button type="button" :class="{active: streamMode}" @click="streamMode = true" :disabled="busy">SSE 流式</button>
+          <button type="button" :class="{active: !streamMode}" @click="streamMode = false" :disabled="busy">完整响应</button>
+        </div>
+      </div>
     </div>
     <div class="chat-log" id="chat-log" x-ref="chatLog">
       <template x-for="(msg, i) in messages" :key="i">
         <div class="msg" :class="'role-' + msg.role">
-          <div class="msg-label" x-text="msgLabel(msg.role)"></div>
+          <div class="msg-meta">
+            <div class="msg-label" x-text="msgLabel(msg.role)"></div>
+            <span class="transport-tag" x-show="msg.transport"
+                  x-text="msg.transport.includes('SSE') ? msg.transport + ' · ' + msg.chunkCount : msg.transport"></span>
+          </div>
           <div class="msg-body">
             <template x-if="msg.toolCalls && msg.toolCalls.length">
               <div class="tool-call">
@@ -59,15 +72,11 @@
           </div>
         </div>
       </template>
-      <div class="msg role-system" x-show="busy">
-        <div class="msg-label">网关</div>
-        <div class="msg-body typing"><span></span><span></span><span></span></div>
-      </div>
     </div>
     <form class="composer" @submit.prevent="send()">
       <textarea x-model="draft" rows="2" placeholder="输入消息，例如：请把列「客户名称」映射到标准字段，调用工具"
                 @keydown.enter.exact.prevent="send()"></textarea>
-      <button class="btn primary" type="submit" :disabled="busy" x-text="busy ? '处理中…' : '发送'"></button>
+      <button class="btn primary send-btn" type="submit" :disabled="busy || !model || !draft.trim()" x-text="busy ? '生成中' : '发送'"></button>
     </form>
     <div class="suggestions">
       <template x-for="s in suggestions" :key="s">
@@ -81,7 +90,7 @@
     <section class="panel">
       <div class="panel-head">
         <h2>模型能力</h2>
-        <button class="btn ghost sm" hx-get="/api/models" hx-trigger="click" hx-swap="innerHTML" hx-target="#model-list">刷新</button>
+        <button class="btn ghost sm" type="button" @click="loadModels()" :disabled="busy">刷新</button>
       </div>
       <div id="model-list" class="model-list" x-html="modelsHTML()"></div>
     </section>
@@ -91,7 +100,7 @@
         <h2>工具演示</h2>
       </div>
       <div class="tool-box">
-        <p class="hint">map_column：模拟"已确认映射"查询。模型（tool_calling: none）经网关注入策略产出标准 tool_calls，网关自动执行并回填，直到给出最终答案。</p>
+        <p class="hint">map_column：模拟“已确认映射”查询。模型优先使用原生 tool_calls，结构异常时由网关降级处理，并自动执行与回填。</p>
         <pre class="code">已确认映射表（模拟）:
   客户名称 → customer_name
   金额 → amount
@@ -103,9 +112,9 @@
     <section class="panel">
       <div class="panel-head">
         <h2>审计留痕</h2>
-        <button class="btn ghost sm" hx-get="/api/audit" hx-trigger="every 5s" hx-swap="innerHTML" hx-target="#audit-list">自动刷新(5s)</button>
+        <button class="btn ghost sm" type="button" @click="loadAudit()">刷新</button>
       </div>
-      <div id="audit-list" class="audit-list" x-html="auditHTML()"></div>
+      <div id="audit-list" class="audit-list"></div>
     </section>
   </aside>
 </main>

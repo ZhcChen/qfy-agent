@@ -10,12 +10,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/api"
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
-	"github.com/qfy-agent/qfy-agent/loop"
-	"github.com/qfy-agent/qfy-agent/registry"
-	"github.com/qfy-agent/qfy-agent/tooling"
+	"github.com/qfy-agent/qfy-agent/agent/api"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/loop"
+	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/qfy-agent/qfy-agent/agent/tooling"
 )
 
 //go:embed static
@@ -40,7 +40,8 @@ func (s *server) routes() http.Handler {
 	if err != nil {
 		panic(err)
 	}
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
+	staticHandler := http.StripPrefix("/static/", http.FileServer(http.FS(sub)))
+	mux.Handle("GET /static/", noStore(staticHandler))
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	// API。
 	mux.HandleFunc("GET /api/models", s.handleModels)
@@ -60,6 +61,13 @@ func logRequests(next http.Handler) http.Handler {
 	})
 }
 
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	page, err := staticFS.ReadFile("static/index.html")
 	if err != nil {
@@ -67,17 +75,19 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(page)
 }
 
 // ---- API：模型 ----
 
 type modelInfo struct {
-	ID           string `json:"id"`
-	BackendModel string `json:"backend_model"`
-	ToolCalling  string `json:"tool_calling"`
-	JSONMode     bool   `json:"json_mode"`
-	Streaming    bool   `json:"streaming"`
+	ID            string `json:"id"`
+	BackendModel  string `json:"backend_model"`
+	ContextWindow int    `json:"context_window"`
+	ToolCalling   string `json:"tool_calling"`
+	JSONMode      bool   `json:"json_mode"`
+	Streaming     bool   `json:"streaming"`
 }
 
 // handleModels GET /api/models：注册表模型列表（含能力声明，供前端展示）。
@@ -86,11 +96,12 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 	out := make([]modelInfo, 0, len(ms))
 	for _, m := range ms {
 		out = append(out, modelInfo{
-			ID:           m.ID,
-			BackendModel: m.BackendModelID(),
-			ToolCalling:  string(m.Capabilities.ToolCalling),
-			JSONMode:     m.Capabilities.JSONMode,
-			Streaming:    m.Capabilities.Streaming,
+			ID:            m.ID,
+			BackendModel:  m.BackendModelID(),
+			ContextWindow: m.ContextWindow,
+			ToolCalling:   string(m.Capabilities.ToolCalling),
+			JSONMode:      m.Capabilities.JSONMode,
+			Streaming:     m.Capabilities.Streaming,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
@@ -106,6 +117,8 @@ type chatRequest struct {
 	Tools []any `json:"tools,omitempty"`
 	// UseTool 是否启用工具调用演示（默认 true）。
 	UseTool *bool `json:"use_tool,omitempty"`
+	// Thinking 是否使用模型默认推理策略；false 转为 OpenAI 风格 reasoning_effort=none。
+	Thinking *bool `json:"thinking,omitempty"`
 }
 
 // handleChat POST /api/chat：非流式对话（经网关受控推理循环）。
@@ -187,7 +200,7 @@ func (s *server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.Model = m.ID
-	_ = api.SimulateStream(r.Context(), w, resp, api.SimulateOptions{})
+	_ = api.SimulateStream(r.Context(), w, resp, api.SimulateOptions{ChunkSize: 2})
 }
 
 // ---- API：工具与审计 ----
@@ -280,6 +293,9 @@ func buildParams(req *chatRequest) map[string]any {
 	} else if len(req.Tools) > 0 {
 		params["tools"] = req.Tools
 	}
+	if req.Thinking != nil && !*req.Thinking {
+		params["reasoning_effort"] = "none"
+	}
 	return params
 }
 
@@ -288,11 +304,11 @@ func hasTools(params map[string]any) bool {
 	return len(tools) > 0
 }
 
-// dropStream 复制参数并剥离 stream（模拟流路径上游用非流式调用）。
+// dropStream 复制参数并剥离仅适用于流式请求的字段。
 func dropStream(params map[string]any) map[string]any {
 	out := make(map[string]any, len(params))
 	for k, v := range params {
-		if k == "stream" {
+		if k == "stream" || k == "stream_options" {
 			continue
 		}
 		out[k] = v
@@ -323,11 +339,11 @@ func mapColumnTool() tooling.Tool {
 // knownMappings 模拟"已确认映射"记忆（一期硬编码；二期接 nomic-embed 向量检索）。
 var knownMappings = map[string]string{
 	"客户名称": "customer_name",
-	"客户名":   "customer_name",
-	"金额":     "amount",
-	"数量":     "quantity",
+	"客户名":  "customer_name",
+	"金额":   "amount",
+	"数量":   "quantity",
 	"订单日期": "order_date",
-	"日期":     "order_date",
+	"日期":   "order_date",
 }
 
 // mapColumnExecutor map_column 的执行函数：查询模拟映射表并返回结果文本

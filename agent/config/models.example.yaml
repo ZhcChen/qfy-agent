@@ -14,6 +14,8 @@ models:
     base_url: http://192.168.1.91:1234/v1
     api_key: ""
     model: google/gemma-4-e4b
+    # 暂按 128k 声明；LM Studio 实际加载容量需在服务端单独保持一致。
+    context_window: 131072
     capabilities:
       tool_calling: partial
       # json_mode=false：LM Studio 实测不支持 response_format.type=json_object

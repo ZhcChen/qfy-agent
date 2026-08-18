@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/audit"
-	"github.com/qfy-agent/qfy-agent/backend"
+	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/qfy-agent/qfy-agent/agent/backend"
 )
 
 // ---- 测试基础设施 ----
@@ -356,6 +356,31 @@ func TestProxyStreamRejectsReasoningOnlyLengthResponse(t *testing.T) {
 	recs := rec.get()
 	if len(recs) != 1 || recs[0].Error == "" || recs[0].Truncated {
 		t.Fatalf("应记录非截断的稳定错误审计，得到 %+v", recs)
+	}
+}
+
+func TestProxyStreamRejectsWhitespaceContentWithReasoningOnlyLength(t *testing.T) {
+	chunks := []string{
+		`{"choices":[{"index":0,"delta":{"content":" \n","reasoning_content":"internal"},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"reasoning_content":" reasoning"},"finish_reason":"length"}]}`,
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	srv, _, errCh := serveProxy(t, upstream.URL, ProxyOptions{Model: "gemma-4-e4b", Strategy: "direct"})
+	defer srv.Close()
+	body := getBody(t, srv.URL)
+	if !strings.Contains(body, `"code":"upstream_incomplete_response"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("空白正文不应掩盖推理截断错误: %s", body)
+	}
+	var incomplete *backend.IncompleteResponseError
+	if err := <-errCh; !errors.As(err, &incomplete) {
+		t.Fatalf("应返回 *backend.IncompleteResponseError，得到 %v", err)
 	}
 }
 
