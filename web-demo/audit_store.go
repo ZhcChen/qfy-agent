@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
 )
 
 // auditStore 模拟消费方落库：内存环形存储最近 N 条审计记录（R17 演示）。

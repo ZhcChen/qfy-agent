@@ -25,12 +25,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
-	"github.com/qfy-agent/qfy-agent/agent/backend"
-	"github.com/qfy-agent/qfy-agent/agent/internal/anyutil"
-	"github.com/qfy-agent/qfy-agent/agent/registry"
-	"github.com/qfy-agent/qfy-agent/agent/schema"
-	"github.com/qfy-agent/qfy-agent/agent/tooling"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/internal/anyutil"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/schema"
+	"github.com/ZhcChen/qfy-agent/agent/tooling"
 )
 
 // 循环硬性默认值（R14/R15/F2/F3/R17）。

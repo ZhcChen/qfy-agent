@@ -6,4 +6,4 @@ use (
 )
 
 // 本地工作区解析已发布版本依赖；web-demo/go.mod 不携带本地路径。
-replace github.com/qfy-agent/qfy-agent/agent v0.1.0 => ./agent
+replace github.com/ZhcChen/qfy-agent/agent v0.1.1 => ./agent

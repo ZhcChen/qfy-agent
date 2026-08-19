@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
-	"github.com/qfy-agent/qfy-agent/agent/backend"
-	"github.com/qfy-agent/qfy-agent/agent/loop"
-	"github.com/qfy-agent/qfy-agent/agent/registry"
-	"github.com/qfy-agent/qfy-agent/agent/tooling"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/loop"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/tooling"
 )
 
 // maxRequestBody 请求体大小上限（1 MiB，防止畸形大请求占满内存）。

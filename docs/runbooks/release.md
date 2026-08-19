@@ -8,7 +8,7 @@
 
 | 模块 | Module path | Tag 示例 |
 |---|---|---|
-| `agent/` | `github.com/qfy-agent/qfy-agent/agent` | `agent/v0.1.0` |
+| `agent/` | `github.com/ZhcChen/qfy-agent/agent` | `agent/v0.1.0` |
 
 `web-demo/go.mod` 保留对已发布 `agent` 版本的依赖，不提交指向 `../agent` 的本地 `replace`；根目录 `go.work` 通过版本化 replace 供本地联调使用。`web-demo` 的变更随仓库维护，但不单独发布。
 

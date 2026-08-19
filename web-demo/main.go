@@ -17,10 +17,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
-	"github.com/qfy-agent/qfy-agent/agent/backend"
-	"github.com/qfy-agent/qfy-agent/agent/loop"
-	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/loop"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
 )
 
 func main() {

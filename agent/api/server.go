@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
-	"github.com/qfy-agent/qfy-agent/agent/backend"
-	"github.com/qfy-agent/qfy-agent/agent/loop"
-	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/loop"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
 )
 
 // HandlerConfig 组装 HTTP 处理器的全部依赖（R18：库不读取文件与环境变量，

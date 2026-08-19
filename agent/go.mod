@@ -1,4 +1,4 @@
-module github.com/qfy-agent/qfy-agent/agent
+module github.com/ZhcChen/qfy-agent/agent
 
 go 1.26.1
 

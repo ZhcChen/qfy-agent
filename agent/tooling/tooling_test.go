@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/backend"
-	"github.com/qfy-agent/qfy-agent/agent/registry"
-	"github.com/qfy-agent/qfy-agent/agent/schema"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/schema"
 )
 
 // ---- 测试基础设施 ----

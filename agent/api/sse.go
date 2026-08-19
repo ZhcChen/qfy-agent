@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
 )
 
 // SSE 默认参数（KTD7）：

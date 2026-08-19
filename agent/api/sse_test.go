@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
-	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
 )
 
 // ---- 测试基础设施 ----

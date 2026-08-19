@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
-	"github.com/qfy-agent/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
 )
 
 // DefaultSummaryRunes 流式输出摘要（content 与工具参数）保留的 rune 数上限

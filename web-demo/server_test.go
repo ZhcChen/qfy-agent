@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
-	"github.com/qfy-agent/qfy-agent/agent/backend"
-	"github.com/qfy-agent/qfy-agent/agent/loop"
-	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/loop"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
 )
 
 // testRegistryYAML 以 mock 后端地址渲染注册表（单条模型，能力与示例配置一致）。

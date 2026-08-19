@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
 )
 
 // 默认超时：非流式调用使用常规 RequestTimeout；流式读取路径独立放宽

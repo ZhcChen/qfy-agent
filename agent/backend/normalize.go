@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
 )
 
 // NormalizeRequest 参数抹平 + model 翻译（R5）：

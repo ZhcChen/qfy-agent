@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
 )
 
 // normTestModel 构造仅用于归一化测试的注册表模型（无网络）。

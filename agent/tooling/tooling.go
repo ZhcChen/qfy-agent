@@ -18,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/backend"
-	"github.com/qfy-agent/qfy-agent/agent/internal/anyutil"
-	"github.com/qfy-agent/qfy-agent/agent/registry"
-	"github.com/qfy-agent/qfy-agent/agent/schema"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/internal/anyutil"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/schema"
 )
 
 // Tool 是消费方请求 tools 的标准 OpenAI 形态（工具定义输入，供注入模板与校验使用）。

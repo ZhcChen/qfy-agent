@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
 )
 
 // testModel 构造指向 httptest 后端的注册表模型（ID 与后端 model id 故意不同，

@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qfy-agent/qfy-agent/agent/audit"
-	"github.com/qfy-agent/qfy-agent/agent/backend"
-	"github.com/qfy-agent/qfy-agent/agent/registry"
-	"github.com/qfy-agent/qfy-agent/agent/tooling"
+	"github.com/ZhcChen/qfy-agent/agent/audit"
+	"github.com/ZhcChen/qfy-agent/agent/backend"
+	"github.com/ZhcChen/qfy-agent/agent/registry"
+	"github.com/ZhcChen/qfy-agent/agent/tooling"
 )
 
 // ---- 测试基础设施 ----

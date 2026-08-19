@@ -6,8 +6,8 @@ qfy-agent 是一个 Go 多模块项目。仓库根目录通过 `go.work` 组织�
 
 | 目录 | Go module | 职责 |
 |---|---|---|
-| [`agent/`](agent/) | `github.com/qfy-agent/qfy-agent/agent` | OpenAI 兼容的轻量级 AI Agent 网关库与示例服务 |
-| [`web-demo/`](web-demo/) | `github.com/qfy-agent/qfy-agent/web-demo` | 消费方接入演示服务（前后端分离：Go 渲染静态页面 + htmx/alpine.js，默认端口 8077） |
+| [`agent/`](agent/) | `github.com/ZhcChen/qfy-agent/agent` | OpenAI 兼容的轻量级 AI Agent 网关库与示例服务 |
+| [`web-demo/`](web-demo/) | `github.com/ZhcChen/qfy-agent/web-demo` | 消费方接入演示服务（前后端分离：Go 渲染静态页面 + htmx/alpine.js，默认端口 8077） |
 
 ## 开发
 

@@ -2,7 +2,7 @@
 
 轻量级 AI Agent 网关库（Go）。对外暴露 **OpenAI 兼容规范**的 HTTP API，对内通过"模型能力声明 + 适配层"抹平本地模型的能力差异——包括工具调用能力薄弱的模型。
 
-本模块位于多模块仓库的 `agent/` 目录，Go module 路径为 `github.com/qfy-agent/qfy-agent/agent`。本文件中的仓库路径和命令均以仓库根目录为基准。
+本模块位于多模块仓库的 `agent/` 目录，Go module 路径为 `github.com/ZhcChen/qfy-agent/agent`。本文件中的仓库路径和命令均以仓库根目录为基准。
 
 设计背景：公司财务系统需为"非标准 Excel 列语义识别"接入本地大模型（LM Studio，`http://192.168.1.91:1234/v1`，主力模型 google/gemma-4-e4b）。该模型原生 function calling 能力薄弱，直接对接会使业务代码适配不同模型差异；引入重型 agent 框架又与"轻量、可控、可审计"诉求冲突。qfy-agent 作为薄网关：**任何 OpenAI SDK 可直接接入，消费方无感知后端真实能力**。
 
